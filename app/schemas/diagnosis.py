@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class DiagnosisAgentRequest(BaseModel):
     project_id: int = Field(..., description="项目ID")
+    session_id: str | None = Field(default=None, description="会话ID")
     question: str | None = Field(default=None, description="自然语言问题")
     person_id: str | None = None
     telephone: str | None = None
@@ -22,8 +23,15 @@ class SuggestedAction(BaseModel):
 
 
 class DiagnosisAgentResponse(BaseModel):
+    trace_id: str
+    session_id: str
+    status: str
     normalized_request: dict[str, Any]
     answer: str
+    follow_up_question: str | None = None
+    needs_input: list[str] = Field(default_factory=list)
+    steps: list[str] = Field(default_factory=list)
+    available_actions: list[dict[str, Any]] = Field(default_factory=list)
     summary: str
     main_cause: str
     main_cause_name: str

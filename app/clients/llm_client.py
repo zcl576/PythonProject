@@ -9,7 +9,16 @@ from app.config import get_settings
 
 
 class LlmClient:
+    """LLM 客户端类
+    
+    负责与 LLM 服务交互，执行参数抽取和诊断解释等任务。
+    """
+    
     def __init__(self) -> None:
+        """初始化 LLM 客户端
+        
+        从配置中读取 LLM 相关设置，包括启用状态、API 密钥、基础 URL 等。
+        """
         settings = get_settings()
         self._enabled = settings.llm_enabled and bool(settings.llm_api_key)
         self._base_url = settings.llm_base_url.rstrip("/")
@@ -19,9 +28,24 @@ class LlmClient:
 
     @property
     def enabled(self) -> bool:
+        """获取 LLM 客户端是否启用
+        
+        Returns:
+            bool: LLM 客户端是否启用
+        """
         return self._enabled
 
     async def extract_diagnosis_fields(self, question: str) -> dict[str, Any] | None:
+        """从问题描述中提取诊断参数
+        
+        使用 LLM 从问题描述中提取 personId、telephone、cardNo、deviceId 等诊断参数。
+        
+        Args:
+            question: 问题描述文本
+            
+        Returns:
+            dict[str, Any] | None: 提取的参数字典，或 None（如果提取失败）
+        """
         if not self._enabled or not question.strip():
             return None
         messages = [
@@ -39,6 +63,18 @@ class LlmClient:
         return self._parse_json(content)
 
     async def explain_diagnosis(self, question: str | None, normalized: dict[str, Any], result: dict[str, Any]) -> str | None:
+        """生成诊断解释
+        
+        使用 LLM 根据诊断结果生成清晰的诊断结论，包含最可能原因、关键证据和建议动作。
+        
+        Args:
+            question: 原始问题描述
+            normalized: 标准化后的参数
+            result: 诊断结果
+            
+        Returns:
+            str | None: 诊断解释文本，或 None（如果生成失败）
+        """
         if not self._enabled:
             return None
         diagnosis = result.get("diagnosis") or {}
@@ -61,6 +97,17 @@ class LlmClient:
         return await self._chat(messages, temperature=0.2)
 
     async def _chat(self, messages: list[dict[str, str]], temperature: float) -> str:
+        """与 LLM 服务进行对话
+        
+        向 LLM 服务发送请求并获取响应。
+        
+        Args:
+            messages: 消息列表，包含系统消息和用户消息
+            temperature: 生成文本的随机性，0 表示确定性输出
+            
+        Returns:
+            str: LLM 生成的响应内容
+        """
         payload = {"model": self._model, "messages": messages, "temperature": temperature}
         headers = {"Authorization": f"Bearer {self._api_key}"}
         async with httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout) as client:
@@ -70,6 +117,16 @@ class LlmClient:
         return data["choices"][0]["message"]["content"]
 
     def _parse_json(self, content: str) -> dict[str, Any] | None:
+        """解析 JSON 内容
+        
+        解析 LLM 返回的 JSON 内容，处理代码块标记，并提取所需字段。
+        
+        Args:
+            content: LLM 返回的内容
+            
+        Returns:
+            dict[str, Any] | None: 解析后的参数字典，或 None（如果解析失败）
+        """
         text = content.strip()
         if text.startswith("```"):
             text = text.strip("`")
@@ -87,4 +144,3 @@ class LlmClient:
             "cardNo": parsed.get("cardNo"),
             "deviceId": parsed.get("deviceId"),
         }
-

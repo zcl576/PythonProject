@@ -2,4 +2,9 @@
 
 /.idea
 /.venv
+/.uv-cache
+/.uv-python
+/.uv-venv
+/.pytest_cache
+/pytest-cache-files-*
 *.pyc

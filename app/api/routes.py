@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from fastapi.params import Header
 
 from app.schemas.diagnosis import DiagnosisAgentRequest, DiagnosisAgentResponse
 from app.services.access_diagnosis_agent import AccessDiagnosisAgentService
@@ -13,5 +14,5 @@ async def health() -> dict[str, str]:
 
 
 @router.post("/api/agent/access-diagnosis", response_model=DiagnosisAgentResponse)
-async def diagnose(request: DiagnosisAgentRequest) -> DiagnosisAgentResponse:
-    return await service.diagnose(request)
+async def diagnose(request: DiagnosisAgentRequest,project_id: str = Header(None)) -> DiagnosisAgentResponse:
+    return await service.diagnose(request,project_id)

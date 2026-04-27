@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 import httpx
+from openai import OpenAI
 
 from app.config import get_settings
 
@@ -53,7 +54,7 @@ class LlmClient:
                 "role": "system",
                 "content": (
                     "你是门禁异常诊断参数抽取器。只输出 JSON，不要输出解释。"
-                    "JSON 字段只能包含 personId、telephone、cardNo、deviceId。"
+                    "JSON 字段只能包含 personName、telephone、cardNo、deviceName、deviceSn。"
                     "无法确定的字段输出 null。"
                 ),
             },
@@ -79,11 +80,12 @@ class LlmClient:
             return None
         diagnosis = result.get("diagnosis") or {}
         compact_payload = {
-            "question": question,
-            "normalizedRequest": normalized,
-            "diagnosis": diagnosis,
+            "问题": question,
+            "标准化请求": normalized,
+            "诊断结果": diagnosis,
         }
         messages = [
+
             {
                 "role": "system",
                 "content": (
@@ -108,13 +110,26 @@ class LlmClient:
         Returns:
             str: LLM 生成的响应内容
         """
-        payload = {"model": self._model, "messages": messages, "temperature": temperature}
-        headers = {"Authorization": f"Bearer {self._api_key}"}
-        async with httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout) as client:
-            response = await client.post("/chat/completions", headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-        return data["choices"][0]["message"]["content"]
+        client = OpenAI(
+            api_key=self._api_key,
+            base_url=self._base_url)
+
+        response = client.chat.completions.create(
+            model=self._model,
+            stream=False,
+            temperature=temperature,
+            messages=messages,
+            response_format={
+                'type': 'json_object'
+            }
+        )
+        # payload = {"model": self._model, "messages": messages, "temperature": temperature}
+        # headers = {"Authorization": f"Bearer {self._api_key}"}
+        # async with httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout) as client:
+        #     response = await client.post("/chat/completions", headers=headers, json=payload)
+        #     response.raise_for_status()
+        #     data = response.json()
+        return response.choices[0].message.content
 
     def _parse_json(self, content: str) -> dict[str, Any] | None:
         """解析 JSON 内容
@@ -127,20 +142,16 @@ class LlmClient:
         Returns:
             dict[str, Any] | None: 解析后的参数字典，或 None（如果解析失败）
         """
-        text = content.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text.lower().startswith("json"):
-                text = text[4:].strip()
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(content)
         except json.JSONDecodeError:
             return None
         if not isinstance(parsed, dict):
             return None
         return {
-            "personId": parsed.get("personId"),
+            "personName": parsed.get("personName"),
             "telephone": parsed.get("telephone"),
             "cardNo": parsed.get("cardNo"),
-            "deviceId": parsed.get("deviceId"),
+            "deviceName": parsed.get("deviceName"),
+            "deviceSn": parsed.get("deviceSn"),
         }

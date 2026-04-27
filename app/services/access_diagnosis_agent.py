@@ -1,52 +1,79 @@
-import re
 import uuid
 from typing import Any
 
-import httpx
-
+from app.agent.field_extractor import DiagnosisFieldExtractor
+from app.agent.memory import InMemorySessionStore
+from app.agent.responder import DiagnosisResponder
+from app.agent.tools import AccessDiagnosisToolExecutor
+from app.agent.trace import TraceRecorder
 from app.clients.estate_ai_client import EstateAiClient
 from app.clients.llm_client import LlmClient
 from app.schemas.diagnosis import DiagnosisAgentRequest, DiagnosisAgentResponse, SuggestedAction
 
 
 class AccessDiagnosisAgentService:
-    """门禁诊断代理服务类
+    """门禁诊断代理编排服务
     
-    负责处理门禁异常的诊断请求，包括请求标准化、会话管理、调用诊断工具和构建响应。
+    负责编排门禁诊断的完整流程，包括参数提取、会话管理、工具调用和响应生成。
     """
-    
-    def __init__(self) -> None:
+
+    def __init__(
+        self,
+        client: EstateAiClient | None = None,
+        llm: LlmClient | None = None,
+        session_store: InMemorySessionStore | None = None,
+    ) -> None:
         """初始化门禁诊断代理服务
         
-        初始化 EstateAiClient 和 LlmClient 客户端，以及会话存储。
+        Args:
+            client: Estate AI 客户端实例，默认为 None，会自动创建
+            llm: LLM 客户端实例，默认为 None，会自动创建
+            session_store: 会话存储实例，默认为 None，会自动创建
         """
-        self._client = EstateAiClient()
-        self._llm = LlmClient()
-        self._sessions: dict[str, dict[str, Any]] = {}
+        self._client = client or EstateAiClient()  # Estate AI 客户端
+        self._llm = llm or LlmClient()  # LLM 客户端
+        self._sessions = session_store or InMemorySessionStore()  # 会话存储
+        self._field_extractor = DiagnosisFieldExtractor(self._llm)  # 字段提取器
+        self._tools = AccessDiagnosisToolExecutor(self._client)  # 工具执行器
+        self._responder = DiagnosisResponder(self._llm)  # 响应生成器
 
-    async def diagnose(self, request: DiagnosisAgentRequest) -> DiagnosisAgentResponse:
-        """执行门禁异常诊断
+    async def diagnose(self, request: DiagnosisAgentRequest,project_id: int | None = None) -> DiagnosisAgentResponse:
+        """执行门禁诊断
         
-        处理诊断请求，包括标准化输入、合并会话上下文、调用诊断工具并构建响应。
+        完整的诊断流程：
+        1. 生成追踪 ID 和会话 ID
+        2. 提取诊断参数
+        3. 合并会话上下文
+        4. 检查诊断信息是否足够
+        5. 调用诊断工具
+        6. 分析诊断结果
+        7. 生成诊断回复
+        8. 构建诊断响应
         
         Args:
-            request: 诊断请求对象，包含会话ID、问题描述和各种标识信息
+            request: 诊断请求对象
             
         Returns:
-            DiagnosisAgentResponse: 诊断响应对象，包含诊断结果、状态、建议操作等信息
+            DiagnosisAgentResponse: 诊断响应对象
         """
-        trace_id = uuid.uuid4().hex
-        session_id = request.session_id or trace_id
-        warnings: list[str] = []
-        steps: list[str] = ["识别问题类型：门禁异常诊断"]
-        normalized = await self._normalize_request(request, warnings)
-        normalized = self._merge_session_context(session_id, normalized)
-        self._sessions[session_id] = normalized
-        steps.append("抽取并合并诊断参数")
+        trace_id = uuid.uuid4().hex  # 生成唯一追踪 ID
+        session_id = request.session_id or trace_id  # 使用请求中的会话 ID 或生成新的
+        warnings: list[str] = []  # 警告信息列表
+        trace = TraceRecorder(trace_id)  # 创建追踪记录器
+        trace.add("intent", "识别问题类型：门禁异常诊断")
 
+        # 提取诊断参数
+        extracted = await self._field_extractor.extract(request, warnings)
+        trace.add("extract", "抽取诊断参数", {"extracted": self._compact(extracted)})
+        
+        # 合并会话上下文
+        normalized = self._sessions.merge(session_id, extracted)
+        trace.add("memory", "合并会话上下文", {"session_id": session_id, "normalized": self._compact(normalized)})
+
+        # 检查诊断信息是否足够
         if not any(normalized.values()):
             follow_up_question = "请提供手机号、卡号、人员ID或设备ID中的任意一个，我再继续诊断。"
-            steps.append("诊断信息不足，等待补充关键标识")
+            trace.add("clarify", "诊断信息不足，等待补充关键标识")
             return DiagnosisAgentResponse(
                 trace_id=trace_id,
                 session_id=session_id,
@@ -55,7 +82,8 @@ class AccessDiagnosisAgentService:
                 answer=follow_up_question,
                 follow_up_question=follow_up_question,
                 needs_input=["person_id", "telephone", "card_no", "device_id"],
-                steps=steps,
+                steps=trace.steps(),
+                trace=trace.trace,
                 available_actions=[],
                 summary="缺少可定位人员或设备的诊断信息",
                 main_cause="CONTEXT_INSUFFICIENT",
@@ -70,23 +98,38 @@ class AccessDiagnosisAgentService:
                 diagnosis=None,
             )
 
-        steps.append("调用 cloudx-estate-ai 诊断工具")
-        result = await self._client.get_result(request.project_id, normalized)
+        # 调用诊断工具
+        trace.add("tool", "调用 cloudx-estate-ai 诊断工具", {"tool": "cloudx.access_diagnosis.result"})
+        tool_result = await self._tools.run_diagnosis(project_id, normalized)
+        result = tool_result.output
         context = result.get("context") or {}
         diagnosis = result.get("diagnosis") or {}
-        answer = await self._build_answer(request.question, normalized, result, warnings)
+        
+        # 分析诊断结果
+        trace.add(
+            "reason",
+            f"分析诊断结果：{diagnosis.get('mainCauseName', '未知原因')}",
+            {"mainCause": diagnosis.get("mainCause"), "confidence": diagnosis.get("confidence")},
+        )
+
+        # 生成诊断回复
+        answer = await self._responder.build_answer(request.question, normalized, result, warnings)
+        # LLM 启用 且 没有 LLM 相关警告
         llm_used = self._llm.enabled and not any(item.startswith("LLM") for item in warnings)
-        steps.append(f"分析诊断结果：{diagnosis.get('mainCauseName', '未知原因')}")
         actions = [SuggestedAction.model_validate(item) for item in diagnosis.get("suggestedActions") or []]
         status = "done"
         follow_up_question = None
         needs_input: list[str] = []
+        
+        # 检查是否需要更多信息
         if diagnosis.get("mainCause") == "CONTEXT_INSUFFICIENT":
             status = "need_more_info"
             follow_up_question = "请继续补充手机号、卡号、人员ID或设备ID中的有效信息，我再接着诊断。"
             needs_input = ["person_id", "telephone", "card_no", "device_id"]
-            steps.append("诊断结果仍需要补充信息")
+            trace.add("clarify", "诊断结果仍需要补充信息")
 
+        # 构建诊断响应
+        trace.add("respond", "生成诊断回复", {"status": status, "llm_used": llm_used})
         return DiagnosisAgentResponse(
             trace_id=trace_id,
             session_id=session_id,
@@ -95,7 +138,8 @@ class AccessDiagnosisAgentService:
             answer=answer,
             follow_up_question=follow_up_question,
             needs_input=needs_input,
-            steps=steps,
+            steps=trace.steps(),
+            trace=trace.trace,
             available_actions=self._build_available_actions(actions),
             summary=diagnosis.get("summary", ""),
             main_cause=diagnosis.get("mainCause", "UNKNOWN"),
@@ -110,34 +154,13 @@ class AccessDiagnosisAgentService:
             diagnosis=diagnosis,
         )
 
-    def _merge_session_context(self, session_id: str, current: dict[str, Any]) -> dict[str, Any]:
-        """合并会话上下文
-        
-        将当前请求的参数与之前会话的参数合并，保留非空值。
-        
-        Args:
-            session_id: 会话ID
-            current: 当前请求的标准化参数
-            
-        Returns:
-            dict[str, Any]: 合并后的参数字典
-        """
-        previous = self._sessions.get(session_id) or {}
-        merged = previous.copy()
-        for key, value in current.items():
-            if value:
-                merged[key] = value
-            else:
-                merged.setdefault(key, value)
-        return merged
-
     def _build_available_actions(self, actions: list[SuggestedAction]) -> list[dict[str, Any]]:
         """构建可用操作列表
         
-        将 SuggestedAction 对象列表转换为前端可用的操作字典列表。
+        将 SuggestedAction 对象转换为前端可用的操作字典列表。
         
         Args:
-            actions: 建议操作对象列表
+            actions: 建议操作列表
             
         Returns:
             list[dict[str, Any]]: 可用操作字典列表
@@ -153,132 +176,15 @@ class AccessDiagnosisAgentService:
             for item in actions
         ]
 
-    async def _normalize_request(self, request: DiagnosisAgentRequest, warnings: list[str]) -> dict[str, Any]:
-        """标准化请求参数
+    def _compact(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """压缩字典，移除空值
         
-        从请求对象或问题描述中提取标准化的诊断参数。
-        
-        Args:
-            request: 诊断请求对象
-            warnings: 警告信息列表，用于记录处理过程中的异常
-            
-        Returns:
-            dict[str, Any]: 标准化后的参数字典，包含 personId、telephone、cardNo、deviceId
-        """
-        payload = {
-            "personId": request.person_id,
-            "telephone": request.telephone,
-            "cardNo": request.card_no,
-            "deviceId": request.device_id,
-        }
-        if any(payload.values()):
-            return payload
-
-        question = (request.question or "").strip()
-        if not question:
-            return payload
-
-        if self._llm.enabled:
-            try:
-                extracted = await self._llm.extract_diagnosis_fields(question)
-                if extracted and any(extracted.values()):
-                    return extracted
-            except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
-                warnings.append(f"LLM参数抽取失败，已切换规则抽取: {exc}")
-
-        return self._rule_extract(question)
-
-    def _rule_extract(self, question: str) -> dict[str, Any]:
-        """使用规则从问题描述中提取参数
-        
-        通过正则表达式从问题描述中提取手机号、设备ID、卡号和人员ID。
+        移除字典中的空值，返回只包含非空值的新字典。
         
         Args:
-            question: 问题描述文本
+            payload: 原始字典
             
         Returns:
-            dict[str, Any]: 提取的参数字典
+            dict[str, Any]: 压缩后的字典
         """
-        payload: dict[str, Any] = {
-            "personId": None,
-            "telephone": None,
-            "cardNo": None,
-            "deviceId": None,
-        }
-
-        phone_match = re.search(r"1\d{10}", question)
-        if phone_match:
-            payload["telephone"] = phone_match.group(0)
-
-        device_match = re.search(r"deviceId[:：\s]*([A-Za-z0-9_-]+)", question, re.IGNORECASE)
-        if device_match:
-            payload["deviceId"] = device_match.group(1)
-
-        card_match = re.search(r"card(?:No)?[:：\s]*([A-Za-z0-9_-]+)", question, re.IGNORECASE)
-        if card_match:
-            payload["cardNo"] = card_match.group(1)
-
-        person_match = re.search(r"personId[:：\s]*([A-Za-z0-9_-]+)", question, re.IGNORECASE)
-        if person_match:
-            payload["personId"] = person_match.group(1)
-
-        return payload
-
-    async def _build_answer(
-        self,
-        question: str | None,
-        normalized: dict[str, Any],
-        result: dict[str, Any],
-        warnings: list[str],
-    ) -> str:
-        """构建诊断回答
-        
-        优先使用LLM生成诊断回答，失败时使用规则生成。
-        
-        Args:
-            question: 原始问题描述
-            normalized: 标准化后的参数
-            result: 诊断结果
-            warnings: 警告信息列表
-            
-        Returns:
-            str: 诊断回答文本
-        """
-        if self._llm.enabled:
-            try:
-                answer = await self._llm.explain_diagnosis(question, normalized, result)
-                if answer:
-                    return answer.strip()
-            except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
-                warnings.append(f"LLM诊断解释失败，已切换规则解释: {exc}")
-        return self._rule_answer(normalized, result.get("diagnosis") or {})
-
-    def _rule_answer(self, normalized: dict[str, Any], diagnosis: dict[str, Any]) -> str:
-        """使用规则生成诊断回答
-        
-        基于诊断结果和标准化参数，使用规则模板生成诊断回答。
-        
-        Args:
-            normalized: 标准化后的参数
-            diagnosis: 诊断结果
-            
-        Returns:
-            str: 诊断回答文本
-        """
-        main_cause_name = diagnosis.get("mainCauseName", "未知原因")
-        summary = diagnosis.get("summary", "")
-        evidences = diagnosis.get("evidences") or []
-        actions = diagnosis.get("suggestedActions") or []
-
-        segments = [f"诊断结论：{main_cause_name}。"]
-        if summary:
-            segments.append(summary)
-        if any(normalized.values()):
-            formatted = ", ".join(f"{key}={value}" for key, value in normalized.items() if value)
-            segments.append(f"本次诊断输入：{formatted}。")
-        if evidences:
-            segments.append("关键证据：" + "；".join(evidences[:3]) + "。")
-        if actions:
-            action_names = "、".join(item.get("actionName", item.get("action", "")) for item in actions[:3])
-            segments.append(f"建议优先处理：{action_names}。")
-        return "".join(segments)
+        return {key: value for key, value in payload.items() if value}

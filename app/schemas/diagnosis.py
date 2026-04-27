@@ -2,9 +2,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agent.trace import AgentTrace
+
 
 class DiagnosisAgentRequest(BaseModel):
-    project_id: int = Field(..., description="项目ID")
     session_id: str | None = Field(default=None, description="会话ID")
     question: str | None = Field(default=None, description="自然语言问题")
     person_id: str | None = None
@@ -31,6 +32,7 @@ class DiagnosisAgentResponse(BaseModel):
     follow_up_question: str | None = None
     needs_input: list[str] = Field(default_factory=list)
     steps: list[str] = Field(default_factory=list)
+    trace: AgentTrace | None = None
     available_actions: list[dict[str, Any]] = Field(default_factory=list)
     summary: str
     main_cause: str

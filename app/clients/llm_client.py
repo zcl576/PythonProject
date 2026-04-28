@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import httpx
@@ -52,11 +53,7 @@ class LlmClient:
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "你是门禁异常诊断参数抽取器。只输出 JSON，不要输出解释。"
-                    "JSON 字段只能包含 personName、telephone、cardNo、deviceName、deviceSn。"
-                    "无法确定的字段输出 null。"
-                ),
+                "content": self._get_prompt(),
             },
             {"role": "user", "content": question},
         ]
@@ -155,3 +152,13 @@ class LlmClient:
             "deviceName": parsed.get("deviceName"),
             "deviceSn": parsed.get("deviceSn"),
         }
+    def _get_prompt(self) -> str:
+        """获取 LLM 提示
+
+        从文件中读取 LLM 提示模板。
+
+        Returns:
+            str: LLM 提示模板内容
+        """
+        with open(os.path.join(get_settings().base_dir, "prompts", "field_extraction_system_v1.md"), "r", encoding="utf-8") as f:
+            return f.read()

@@ -8,7 +8,8 @@ class Settings(BaseSettings):
     
     定义应用的配置项，包括 Estate AI 服务和 LLM 服务的相关配置。
     """
-    
+    base_dir: str = "app"  # 应用根目录
+
     # Estate AI 服务配置
     estate_ai_base_url: str = "http://127.0.0.1:4002"  # Estate AI 服务基础 URL
     estate_ai_timeout_seconds: float = 10.0  # Estate AI 服务请求超时时间（秒）

@@ -6,6 +6,7 @@ from app.agent.trace import AgentTrace
 
 
 class DiagnosisAgentRequest(BaseModel):
+    project_id: int | None = Field(default=None, description="项目ID；优先使用 PROJECT-ID 请求头")
     session_id: str | None = Field(default=None, description="会话ID")
     question: str | None = Field(default=None, description="自然语言问题")
     person_id: str | None = None

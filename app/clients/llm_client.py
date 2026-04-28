@@ -4,8 +4,8 @@ import json
 import os
 from typing import Any
 
-import httpx
-from openai import OpenAI
+from langchain_deepseek import ChatDeepSeek
+from pydantic import SecretStr
 
 from app.config import get_settings
 
@@ -57,7 +57,7 @@ class LlmClient:
             },
             {"role": "user", "content": question},
         ]
-        content = await self._chat(messages, temperature=0)
+        content = await self._json_chat(messages, temperature=0)
         return self._parse_json(content)
 
     async def explain_diagnosis(self, question: str | None, normalized: dict[str, Any], result: dict[str, Any]) -> str | None:
@@ -93,9 +93,9 @@ class LlmClient:
             },
             {"role": "user", "content": json.dumps(compact_payload, ensure_ascii=False)},
         ]
-        return await self._chat(messages, temperature=0.2)
+        return await self._text_chat(messages, temperature=0.2)
 
-    async def _chat(self, messages: list[dict[str, str]], temperature: float) -> str:
+    async def _json_chat(self, messages: list[dict[str, str]], temperature: float) -> str:
         """与 LLM 服务进行对话
         
         向 LLM 服务发送请求并获取响应。
@@ -107,26 +107,29 @@ class LlmClient:
         Returns:
             str: LLM 生成的响应内容
         """
-        client = OpenAI(
-            api_key=self._api_key,
-            base_url=self._base_url)
-
-        response = client.chat.completions.create(
+        model = ChatDeepSeek(
             model=self._model,
-            stream=False,
             temperature=temperature,
-            messages=messages,
-            response_format={
-                'type': 'json_object'
-            }
+            api_key=SecretStr(self._api_key or ""),
+            base_url=self._base_url,
+            timeout=self._timeout,
+            max_retries=2,
+            model_kwargs={"response_format": {"type": "json_object"}},
         )
-        # payload = {"model": self._model, "messages": messages, "temperature": temperature}
-        # headers = {"Authorization": f"Bearer {self._api_key}"}
-        # async with httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout) as client:
-        #     response = await client.post("/chat/completions", headers=headers, json=payload)
-        #     response.raise_for_status()
-        #     data = response.json()
-        return response.choices[0].message.content
+        response = await model.ainvoke(messages)
+        return str(response.content)
+
+    async def _text_chat(self, messages: list[dict[str, str]], temperature: float) -> str:
+        model = ChatDeepSeek(
+            model=self._model,
+            temperature=temperature,
+            api_key=SecretStr(self._api_key or ""),
+            base_url=self._base_url,
+            timeout=self._timeout,
+            max_retries=2,
+        )
+        response = await model.ainvoke(messages)
+        return str(response.content)
 
     def _parse_json(self, content: str) -> dict[str, Any] | None:
         """解析 JSON 内容
@@ -146,11 +149,10 @@ class LlmClient:
         if not isinstance(parsed, dict):
             return None
         return {
-            "personName": parsed.get("personName"),
+            "personId": parsed.get("personId") or parsed.get("person_id"),
             "telephone": parsed.get("telephone"),
-            "cardNo": parsed.get("cardNo"),
-            "deviceName": parsed.get("deviceName"),
-            "deviceSn": parsed.get("deviceSn"),
+            "cardNo": parsed.get("cardNo") or parsed.get("card_no"),
+            "deviceId": parsed.get("deviceId") or parsed.get("device_id"),
         }
     def _get_prompt(self) -> str:
         """获取 LLM 提示

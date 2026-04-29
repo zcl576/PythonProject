@@ -51,3 +51,10 @@ class DiagnosisAgentResponse(BaseModel):
     suggested_actions: list[SuggestedAction] = Field(default_factory=list)
     context: dict[str, Any] | None = None
     diagnosis: dict[str, Any] | None = None
+
+
+class FrontendDiagnosisResponse(BaseModel):
+    answer: str
+    status: str
+    follow_up_question: str | None = None
+    needs_input: list[str] = Field(default_factory=list)

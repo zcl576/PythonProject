@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"  # 使用的 LLM 模型
     llm_timeout_seconds: float = 20.0  # LLM 服务请求超时时间（秒）
 
+
+    redis_enabled: bool = False
+    redis_host: str | None = None
+    redis_port: int = 6379
+    redis_password: str | None = None
+    redis_ssl: bool = False
+    redis_ssl_cert_reqs: str = "none"
+
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")  # 配置加载设置
 
 

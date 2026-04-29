@@ -1,12 +1,10 @@
 from typing import Any
 
-
 class InMemorySessionStore:
     """内存会话存储
     
     在内存中存储会话数据，用于在多次请求之间保留和合并会话上下文。
     """
-    
     def __init__(self) -> None:
         """初始化内存会话存储
         

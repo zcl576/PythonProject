@@ -246,7 +246,7 @@ class AccessDiagnosisAgentService:
             "personName": request.person_name,
         }
         trace.add("planner", "使用 LangChain Agent 自主规划工具调用", {"known_fields": self._compact(known_fields)})
-        agent_result = await self._langchain_agent.run(project_id, request.question or "", self._compact(known_fields))
+        agent_result = await self._langchain_agent.run(project_id, request.question or "", self._compact(known_fields), session_id)
         trace.add("tool", "LangChain Agent 已完成工具调用", {"tool_outputs": len(agent_result.tool_outputs)})
 
         result = agent_result.tool_outputs[-1] if agent_result.tool_outputs else {}
@@ -254,7 +254,7 @@ class AccessDiagnosisAgentService:
         diagnosis = result.get("diagnosis") or {}
         actions = [SuggestedAction.model_validate(item) for item in diagnosis.get("suggestedActions") or []]
         status = "done" if result else "need_more_info"
-        follow_up_question = None if result else "我还没有拿到可用的工具结果，请补充手机号、卡号、人员ID、人员姓名、设备ID、设备名称或设备SN。"
+        follow_up_question = None if result else "我还没有拿到可用的工具结果，请补充手机号、卡号、人员姓名、设备名称或设备SN。"
         needs_input = [] if result else ["person_id", "telephone", "card_no", "person_name", "device_id", "device_name", "device_sn"]
 
         trace.add(

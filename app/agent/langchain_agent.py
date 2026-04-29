@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+from functools import lru_cache
+from app.agent.local_memory import get_inmemory_session
 from typing import Any
 
 from langchain.agents import create_agent
@@ -48,6 +51,7 @@ class LangChainAccessAgent:
         self._api_key = settings.llm_api_key  # LLM API 密钥
         self._base_url = settings.llm_base_url.rstrip("/")  # LLM API 基础URL
         self._tools = EstateAITool().tools  # 加载门禁诊断相关的工具列表
+        self._system_prompt = load_access_agent_system_prompt()
 
     @property
     def enabled(self) -> bool:
@@ -58,7 +62,7 @@ class LangChainAccessAgent:
         """
         return self._enabled
 
-    async def run(self, project_id: int, question: str, known_fields: dict[str, Any]) -> LangChainAgentResult:
+    async def run(self, project_id: int, question: str, known_fields: dict[str, Any], session_id: str) -> LangChainAgentResult:
         """运行 LangChain Agent 执行门禁诊断
         
         该方法创建并运行一个 AI Agent，让它根据提供的信息自主调用工具进行门禁诊断。
@@ -91,15 +95,8 @@ class LangChainAccessAgent:
         agent = create_agent(
             model=model,  # 使用上述创建的模型
             tools=self._tools,  # 使用门禁诊断相关的工具
-            system_prompt=(
-                "你是物业门禁 AI Agent。"
-                "用户询问真实门禁业务数据或门禁打不开原因时，必须调用可用工具。"
-                "调用工具时必须传入 project_id，并尽量使用用户给出的手机号、卡号、人员ID或设备ID。"
-                "不要编造工具没有返回的信息。"
-                "不要承诺已经执行开门、补卡、续期、派单等动作。"
-                "project_id 只用于调用工具，不要在最终诊断报告中展示项目ID或其它内部技术字段。"
-                "最终用中文给出简洁诊断结论、关键依据和建议处理。"
-            ),  # 系统提示词，定义AI行为
+            checkpointer=get_inmemory_session(),
+            system_prompt=self._system_prompt,  # 系统提示词，定义AI行为
         )
         
         # 构建请求负载
@@ -118,7 +115,8 @@ class LangChainAccessAgent:
                         "content": json.dumps(payload, ensure_ascii=False),  # 序列化后的请求负载
                     }
                 ]
-            }
+            },
+            config={"configurable": {"thread_id": session_id}}
         )
         
         # 提取消息和答案
@@ -164,3 +162,10 @@ class LangChainAccessAgent:
             if isinstance(parsed, dict):
                 outputs.append(parsed)
         return outputs
+
+
+@lru_cache
+def load_access_agent_system_prompt() -> str:
+    prompt_path = os.path.join(get_settings().base_dir, "prompts", "access_agent_system_v1.md")
+    with open(prompt_path, "r", encoding="utf-8") as file:
+        return file.read()

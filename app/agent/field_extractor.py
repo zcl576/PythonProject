@@ -17,6 +17,9 @@ class DiagnosisFieldExtractor:
             "telephone": request.telephone,
             "cardNo": request.card_no,
             "deviceId": request.device_id,
+            "deviceName": request.device_name,
+            "deviceSn": request.device_sn,
+            "personName": request.person_name,
         }
         if any(payload.values()):
             return payload
@@ -41,6 +44,9 @@ class DiagnosisFieldExtractor:
             "telephone": None,
             "cardNo": None,
             "deviceId": None,
+            "deviceName": None,
+            "deviceSn": None,
+            "personName": None,
         }
 
         phone_match = re.search(r"1\d{10}", question)
@@ -51,6 +57,14 @@ class DiagnosisFieldExtractor:
         if device_match:
             payload["deviceId"] = device_match.group(1)
 
+        device_sn_match = re.search(r"(?:deviceSn|设备SN|设备序列号|sn)[:：\s]*([A-Za-z0-9_-]+)", question, re.IGNORECASE)
+        if device_sn_match:
+            payload["deviceSn"] = device_sn_match.group(1)
+
+        device_name_match = re.search(r"(?:deviceName|设备名称)[:：\s]*([\u4e00-\u9fa5A-Za-z0-9_-]+)", question, re.IGNORECASE)
+        if device_name_match:
+            payload["deviceName"] = device_name_match.group(1)
+
         card_match = re.search(r"card(?:No)?[:：\s]*([A-Za-z0-9_-]+)", question, re.IGNORECASE)
         if card_match:
             payload["cardNo"] = card_match.group(1)
@@ -58,5 +72,9 @@ class DiagnosisFieldExtractor:
         person_match = re.search(r"personId[:：\s]*([A-Za-z0-9_-]+)", question, re.IGNORECASE)
         if person_match:
             payload["personId"] = person_match.group(1)
+
+        person_name_match = re.search(r"(?:personName|人员姓名|姓名)[:：\s]*([\u4e00-\u9fa5A-Za-z0-9_-]+)", question, re.IGNORECASE)
+        if person_name_match:
+            payload["personName"] = person_name_match.group(1)
 
         return payload

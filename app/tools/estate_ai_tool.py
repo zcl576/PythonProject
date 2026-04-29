@@ -18,6 +18,9 @@ class AccessDiagnosisInput(BaseModel):
     telephone: str | None = Field(default=None, description="手机号")
     cardNo: str | None = Field(default=None, description="卡号")
     deviceId: str | None = Field(default=None, description="设备 ID")
+    deviceName: str | None = Field(default=None, description="设备名称")
+    deviceSn: str | None = Field(default=None, description="设备 SN")
+    personName: str | None = Field(default=None, description="人员姓名")
 
 
 class EstateAITool:
@@ -42,6 +45,9 @@ class EstateAITool:
             telephone: str | None = None,
             cardNo: str | None = None,
             deviceId: str | None = None,
+            deviceName: str | None = None,
+            deviceSn: str | None = None,
+            personName: str | None = None,
         ) -> dict[str, Any]:
             """
             诊断门禁打不开、刷不开、进不去等异常原因
@@ -54,18 +60,24 @@ class EstateAITool:
                 telephone: 手机号（可选）
                 cardNo: 卡号（可选）
                 deviceId: 设备ID（可选）
+                deviceName: 设备名称（可选）
+                deviceSn: 设备SN（可选）
+                personName: 人员姓名（可选）
                 
             Returns:
                 dict: 包含诊断结果的字典
                 
             Note:
-                personId、telephone、cardNo、deviceId 至少需要提供一个
+                personId、telephone、cardNo、personName、deviceId、deviceName、deviceSn 至少需要提供一个
             """
             normalized = {
                 "personId": personId,
                 "telephone": telephone,
                 "cardNo": cardNo,
                 "deviceId": deviceId,
+                "deviceName": deviceName,
+                "deviceSn": deviceSn,
+                "personName": personName,
             }
             result = await executor.run_diagnosis(project_id, normalized)
             return result.output
@@ -76,7 +88,7 @@ class EstateAITool:
                 name="get_diagnose",
                 description=(
                     "当用户询问门禁打不开、刷不开、进不去、开不了门等异常原因时使用。"
-                    "需要 project_id，以及 personId、telephone、cardNo、deviceId 中至少一个。"
+                    "需要 project_id，以及 personId、telephone、cardNo、personName、deviceId、deviceName、deviceSn 中至少一个。"
                 ),
                 args_schema=AccessDiagnosisInput,
             )

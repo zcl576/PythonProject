@@ -75,7 +75,7 @@ class LlmClient:
         """
         if not self._enabled:
             return None
-        diagnosis = result.get("diagnosis") or {}
+        diagnosis = self._without_internal_fields(result.get("diagnosis") or {})
         compact_payload = {
             "问题": question,
             "标准化请求": normalized,
@@ -89,6 +89,7 @@ class LlmClient:
                     "你是物业门禁异常诊断助手。根据诊断 JSON 给物业人员一句清晰结论，"
                     "包含最可能原因、关键证据和建议动作。不要编造 JSON 中没有的信息。"
                     "不要承诺已经执行开门、补发或工单动作。"
+                    "不要展示项目ID、projectId、project_id、traceId、sessionId 等内部技术字段。"
                 ),
             },
             {"role": "user", "content": json.dumps(compact_payload, ensure_ascii=False)},
@@ -131,6 +132,17 @@ class LlmClient:
         response = await model.ainvoke(messages)
         return str(response.content)
 
+    def _without_internal_fields(self, payload: Any) -> Any:
+        if isinstance(payload, dict):
+            return {
+                key: self._without_internal_fields(value)
+                for key, value in payload.items()
+                if key not in {"projectId", "project_id", "traceId", "trace_id", "sessionId", "session_id"}
+            }
+        if isinstance(payload, list):
+            return [self._without_internal_fields(item) for item in payload]
+        return payload
+
     def _parse_json(self, content: str) -> dict[str, Any] | None:
         """解析 JSON 内容
         
@@ -153,6 +165,9 @@ class LlmClient:
             "telephone": parsed.get("telephone"),
             "cardNo": parsed.get("cardNo") or parsed.get("card_no"),
             "deviceId": parsed.get("deviceId") or parsed.get("device_id"),
+            "deviceName": parsed.get("deviceName") or parsed.get("device_name"),
+            "deviceSn": parsed.get("deviceSn") or parsed.get("device_sn"),
+            "personName": parsed.get("personName") or parsed.get("person_name"),
         }
     def _get_prompt(self) -> str:
         """获取 LLM 提示

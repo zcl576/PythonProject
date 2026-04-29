@@ -6,13 +6,18 @@ from app.agent.trace import AgentTrace
 
 
 class DiagnosisAgentRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     project_id: int | None = Field(default=None, description="项目ID；优先使用 PROJECT-ID 请求头")
     session_id: str | None = Field(default=None, description="会话ID")
     question: str | None = Field(default=None, description="自然语言问题")
-    person_id: str | None = None
+    person_id: str | None = Field(default=None, alias="personId")
     telephone: str | None = None
-    card_no: str | None = None
-    device_id: str | None = None
+    card_no: str | None = Field(default=None, alias="cardNo")
+    device_id: str | None = Field(default=None, alias="deviceId")
+    device_name: str | None = Field(default=None, alias="deviceName")
+    device_sn: str | None = Field(default=None, alias="deviceSn")
+    person_name: str | None = Field(default=None, alias="personName")
 
 
 class SuggestedAction(BaseModel):

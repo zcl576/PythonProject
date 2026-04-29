@@ -131,7 +131,7 @@ class AccessDiagnosisAgentService:
 
         # 检查诊断信息是否足够
         if not any(normalized.values()):
-            follow_up_question = "请提供手机号、卡号、人员ID或设备ID中的任意一个，我再继续诊断。"
+            follow_up_question = "请提供手机号、卡号、人员ID、人员姓名、设备ID、设备名称或设备SN中的任意一个，我再继续诊断。"
             trace.add("clarify", "诊断信息不足，等待补充关键标识")
             return DiagnosisAgentResponse(
                 trace_id=trace_id,
@@ -140,7 +140,7 @@ class AccessDiagnosisAgentService:
                 normalized_request=normalized,
                 answer=follow_up_question,
                 follow_up_question=follow_up_question,
-                needs_input=["person_id", "telephone", "card_no", "device_id"],
+                needs_input=["person_id", "telephone", "card_no", "person_name", "device_id", "device_name", "device_sn"],
                 steps=trace.steps(),
                 trace=trace.trace,
                 available_actions=[],
@@ -151,7 +151,7 @@ class AccessDiagnosisAgentService:
                 agent_mode="llm" if self._llm.enabled else "rule",
                 llm_used=False,
                 warnings=warnings,
-                evidences=["未提供 personId、telephone、cardNo 或 deviceId"],
+                evidences=["未提供 personId、telephone、cardNo、personName、deviceId、deviceName 或 deviceSn"],
                 suggested_actions=[],
                 context=None,
                 diagnosis=None,
@@ -183,8 +183,8 @@ class AccessDiagnosisAgentService:
         # 检查是否需要更多信息
         if diagnosis.get("mainCause") == "CONTEXT_INSUFFICIENT":
             status = "need_more_info"
-            follow_up_question = "请继续补充手机号、卡号、人员ID或设备ID中的有效信息，我再接着诊断。"
-            needs_input = ["person_id", "telephone", "card_no", "device_id"]
+            follow_up_question = "请继续补充手机号、卡号、人员ID、人员姓名、设备ID、设备名称或设备SN中的有效信息，我再接着诊断。"
+            needs_input = ["person_id", "telephone", "card_no", "person_name", "device_id", "device_name", "device_sn"]
             trace.add("clarify", "诊断结果仍需要补充信息")
 
         # 构建诊断响应
@@ -241,6 +241,9 @@ class AccessDiagnosisAgentService:
             "telephone": request.telephone,
             "cardNo": request.card_no,
             "deviceId": request.device_id,
+            "deviceName": request.device_name,
+            "deviceSn": request.device_sn,
+            "personName": request.person_name,
         }
         trace.add("planner", "使用 LangChain Agent 自主规划工具调用", {"known_fields": self._compact(known_fields)})
         agent_result = await self._langchain_agent.run(project_id, request.question or "", self._compact(known_fields))
@@ -251,8 +254,8 @@ class AccessDiagnosisAgentService:
         diagnosis = result.get("diagnosis") or {}
         actions = [SuggestedAction.model_validate(item) for item in diagnosis.get("suggestedActions") or []]
         status = "done" if result else "need_more_info"
-        follow_up_question = None if result else "我还没有拿到可用的工具结果，请补充手机号、卡号、人员ID或设备ID。"
-        needs_input = [] if result else ["person_id", "telephone", "card_no", "device_id"]
+        follow_up_question = None if result else "我还没有拿到可用的工具结果，请补充手机号、卡号、人员ID、人员姓名、设备ID、设备名称或设备SN。"
+        needs_input = [] if result else ["person_id", "telephone", "card_no", "person_name", "device_id", "device_name", "device_sn"]
 
         trace.add(
             "respond",

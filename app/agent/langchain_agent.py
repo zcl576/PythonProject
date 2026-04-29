@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+from app.memory.redis_memory import get_redis_saver
 from functools import lru_cache
-from app.agent.local_memory import get_inmemory_session
 from typing import Any
 
 from langchain.agents import create_agent
@@ -95,7 +95,7 @@ class LangChainAccessAgent:
         agent = create_agent(
             model=model,  # 使用上述创建的模型
             tools=self._tools,  # 使用门禁诊断相关的工具
-            checkpointer=get_inmemory_session(),
+            checkpointer=get_redis_saver(),
             system_prompt=self._system_prompt,  # 系统提示词，定义AI行为
         )
         

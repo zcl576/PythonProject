@@ -8,6 +8,7 @@ from langchain_deepseek import ChatDeepSeek
 from pydantic import SecretStr
 
 from app.config import get_settings
+from loguru import logger as log
 
 
 class LlmClient:
@@ -157,6 +158,7 @@ class LlmClient:
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError:
+            log.error("json转换异常")
             return None
         if not isinstance(parsed, dict):
             return None

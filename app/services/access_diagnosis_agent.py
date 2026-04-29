@@ -3,14 +3,14 @@ from typing import Any
 
 from app.agent.field_extractor import DiagnosisFieldExtractor
 from app.agent.langchain_agent import LangChainAccessAgent
-from app.agent.memory import InMemorySessionStore
+from app.memory.memory import InMemorySessionStore
 from app.agent.responder import DiagnosisResponder
 from app.agent.tools import AccessDiagnosisToolExecutor
 from app.agent.trace import TraceRecorder
 from app.clients.estate_ai_client import EstateAiClient
 from app.clients.llm_client import LlmClient
 from app.schemas.diagnosis import DiagnosisAgentRequest, DiagnosisAgentResponse, SuggestedAction
-
+from loguru import logger as log
 
 class AccessDiagnosisAgentService:
     """门禁诊断代理编排服务
@@ -119,6 +119,7 @@ class AccessDiagnosisAgentService:
             try:
                 return await self._diagnose_with_langchain(request, effective_project_id, session_id, trace, warnings)
             except Exception as exc:
+                log.warning(f"LangChain Agent 调用失败，已切换确定性流程: {exc}")
                 warnings.append(f"LangChain Agent 调用失败，已切换确定性流程: {exc}")
 
         # 提取诊断参数
@@ -349,4 +350,5 @@ class AccessDiagnosisAgentService:
         try:
             return int(raw)
         except (TypeError, ValueError):
+            log.error(f"项目ID提取失败")
             return None

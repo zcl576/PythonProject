@@ -1,13 +1,24 @@
-from redis import Redis
-from langgraph.checkpoint.redis import RedisSaver
-
-from app.config import get_settings
+from contextlib import ExitStack
 from functools import lru_cache
 
+from langgraph.checkpoint.redis import RedisSaver
+from redis import Redis
 
-@lru_cache
+from app.config import get_settings
+
+_stack = ExitStack()
+
+
+def _close_redis_client(client: Redis) -> None:
+    client.close()
+    client.connection_pool.disconnect()
+
+
+@lru_cache(maxsize=1)
 def get_redis_saver() -> RedisSaver:
     settings = get_settings()
+    if not settings.redis_host:
+        raise ValueError("Redis settings are incomplete")
 
     client = Redis(
         host=settings.redis_host,
@@ -19,5 +30,11 @@ def get_redis_saver() -> RedisSaver:
     )
 
     saver = RedisSaver(redis_client=client)
-    saver.setup()
+    try:
+        saver.setup()
+    except Exception:
+        _close_redis_client(client)
+        raise
+
+    _stack.callback(_close_redis_client, client)
     return saver

@@ -3,7 +3,7 @@ from typing import Any
 import httpx
 import pytest
 
-from app.agent.memory import InMemorySessionStore
+from app.memory.local_memory import get_inmemory_session
 from app.schemas.diagnosis import DiagnosisAgentRequest
 from app.services.access_diagnosis_agent import AccessDiagnosisAgentService
 
@@ -100,7 +100,7 @@ async def test_session_context_is_merged_across_turns() -> None:
     service = AccessDiagnosisAgentService(
         client=client,
         llm=DisabledLlm(),
-        session_store=InMemorySessionStore(),
+        session_store=get_inmemory_session(),
     )
 
     first = await service.diagnose(

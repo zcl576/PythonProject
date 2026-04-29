@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from app.memory.redis_memory import get_redis_saver
 from functools import lru_cache
 from typing import Any
 
@@ -12,6 +11,7 @@ from langchain_deepseek import ChatDeepSeek
 from pydantic import SecretStr
 
 from app.config import get_settings
+from app.memory.mysql_memory import get_mysql_saver
 from app.tools.estate_ai_tool import EstateAITool
 
 
@@ -31,7 +31,6 @@ class LangChainAgentResult:
         self.answer = answer  # 最终生成的答案文本
         self.tool_outputs = tool_outputs  # 工具调用产生的输出结果
         self.messages = messages  # Agent交互过程中产生的消息列表
-
 
 class LangChainAccessAgent:
     """基于 LangChain 的门禁访问 AI 代理
@@ -95,7 +94,7 @@ class LangChainAccessAgent:
         agent = create_agent(
             model=model,  # 使用上述创建的模型
             tools=self._tools,  # 使用门禁诊断相关的工具
-            checkpointer=get_redis_saver(),
+            checkpointer=get_mysql_saver(),
             system_prompt=self._system_prompt,  # 系统提示词，定义AI行为
         )
         

@@ -37,54 +37,11 @@ class EstateAITool:
         Args:
             client: 物业AI客户端实例，如果未提供则使用默认实例
         """
-        executor = AccessDiagnosisToolExecutor(client or EstateAiClient())
-
-        async def get_diagnose(
-            project_id: int,
-            personId: str | None = None,
-            telephone: str | None = None,
-            cardNo: str | None = None,
-            deviceId: str | None = None,
-            deviceName: str | None = None,
-            deviceSn: str | None = None,
-            personName: str | None = None,
-        ) -> dict[str, Any]:
-            """
-            诊断门禁打不开、刷不开、进不去等异常原因
-            
-            该函数是工具的核心处理逻辑，接收用户标识信息并执行诊断
-            
-            Args:
-                project_id: 项目ID，用于区分不同物业项目
-                personId: 人员ID（可选）
-                telephone: 手机号（可选）
-                cardNo: 卡号（可选）
-                deviceId: 设备ID（可选）
-                deviceName: 设备名称（可选）
-                deviceSn: 设备SN（可选）
-                personName: 人员姓名（可选）
-                
-            Returns:
-                dict: 包含诊断结果的字典
-                
-            Note:
-                personId、telephone、cardNo、personName、deviceId、deviceName、deviceSn 至少需要提供一个
-            """
-            normalized = {
-                "personId": personId,
-                "telephone": telephone,
-                "cardNo": cardNo,
-                "deviceId": deviceId,
-                "deviceName": deviceName,
-                "deviceSn": deviceSn,
-                "personName": personName,
-            }
-            result = await executor.run_diagnosis(project_id, normalized)
-            return result.output
+        self._executor = AccessDiagnosisToolExecutor(client or EstateAiClient())
 
         self.tools = [
             StructuredTool.from_function(
-                coroutine=get_diagnose,
+                coroutine=self.get_diagnose,
                 name="get_diagnose",
                 description=(
                     "当用户询问门禁打不开、刷不开、进不去、开不了门等异常原因时使用。"
@@ -93,3 +50,47 @@ class EstateAITool:
                 args_schema=AccessDiagnosisInput,
             )
         ]
+
+    async def get_diagnose(
+        self,
+        project_id: int,
+        personId: str | None = None,
+        telephone: str | None = None,
+        cardNo: str | None = None,
+        deviceId: str | None = None,
+        deviceName: str | None = None,
+        deviceSn: str | None = None,
+        personName: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        诊断门禁打不开、刷不开、进不去等异常原因
+
+        该函数是工具的核心处理逻辑，接收用户标识信息并执行诊断
+
+        Args:
+            project_id: 项目ID，用于区分不同物业项目
+            personId: 人员ID（可选）
+            telephone: 手机号（可选）
+            cardNo: 卡号（可选）
+            deviceId: 设备ID（可选）
+            deviceName: 设备名称（可选）
+            deviceSn: 设备SN（可选）
+            personName: 人员姓名（可选）
+
+        Returns:
+            dict: 包含诊断结果的字典
+
+        Note:
+            personId、telephone、cardNo、personName、deviceId、deviceName、deviceSn 至少需要提供一个
+        """
+        normalized = {
+            "personId": personId,
+            "telephone": telephone,
+            "cardNo": cardNo,
+            "deviceId": deviceId,
+            "deviceName": deviceName,
+            "deviceSn": deviceSn,
+            "personName": personName,
+        }
+        result = await self._executor.run_diagnosis(project_id, normalized)
+        return result.output

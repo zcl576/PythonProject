@@ -3,7 +3,7 @@ from functools import lru_cache
 
 from langgraph.checkpoint.redis import RedisSaver
 from redis import Redis
-
+from loguru import logger as log
 from app.config import get_settings
 
 _stack = ExitStack()
@@ -33,6 +33,7 @@ def get_redis_saver() -> RedisSaver:
     try:
         saver.setup()
     except Exception:
+        log.error("redis操作失败", exc_info=True)
         _close_redis_client(client)
         raise
 

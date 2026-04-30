@@ -94,7 +94,7 @@ class LangChainAccessAgent:
         agent = create_agent(
             model=model,  # 使用上述创建的模型
             tools=self._tools,  # 使用门禁诊断相关的工具
-            checkpointer=get_mysql_saver(),
+            checkpointer=await get_mysql_saver(),
             system_prompt=self._system_prompt,  # 系统提示词，定义AI行为
         )
         

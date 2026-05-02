@@ -726,6 +726,7 @@ name = "pythonproject"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "aiomysql" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "langchain" },
@@ -746,6 +747,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiomysql", specifier = ">=0.3.2" },
     { name = "fastapi", specifier = "==0.136.1" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "langchain", specifier = ">=1.2.15" },

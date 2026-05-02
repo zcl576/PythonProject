@@ -42,8 +42,50 @@ class FakeToolsV4:
         return {"ok": True}
 
 
+class FakeLlmV4:
+    def __init__(self, result: dict[str, Any] | None = None, enabled: bool = False) -> None:
+        self._result = result
+        self._enabled = enabled
+        self.calls: list[dict[str, Any]] = []
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    async def understand_right_agent_v4(
+        self,
+        *,
+        question: str,
+        intents: tuple[str, ...],
+        slot_names: tuple[str, ...],
+    ) -> dict[str, Any] | None:
+        self.calls.append(
+            {
+                "question": question,
+                "intents": intents,
+                "slot_names": slot_names,
+            }
+        )
+        return self._result
+
+
 def make_service(tools: FakeToolsV4) -> RightAgentGraphServiceV4:
-    return RightAgentGraphServiceV4(tools=tools, checkpointer=InMemorySaver())
+    return RightAgentGraphServiceV4(
+        tools=tools,
+        checkpointer=InMemorySaver(),
+        llm=FakeLlmV4(),
+    )
+
+
+def make_service_with_llm(
+    tools: FakeToolsV4,
+    llm: FakeLlmV4,
+) -> RightAgentGraphServiceV4:
+    return RightAgentGraphServiceV4(
+        tools=tools,
+        checkpointer=InMemorySaver(),
+        llm=llm,
+    )
 
 
 @pytest.mark.asyncio
@@ -72,6 +114,59 @@ async def test_unknown_intent_is_unsupported_without_tool_call() -> None:
     assert response.status == "unsupported"
     assert tools.calls == []
     assert response.data["supported_capabilities"]
+
+
+@pytest.mark.asyncio
+async def test_llm_understanding_drives_intent_and_slots() -> None:
+    tools = FakeToolsV4()
+    tools.results["diagnose_access_issue"].append(
+        {"diagnosis": {"mainCause": "DEVICE_OFFLINE", "mainCauseName": "\u8bbe\u5907\u79bb\u7ebf"}}
+    )
+    llm = FakeLlmV4(
+        result={
+            "intent": "access_issue",
+            "slots": {"personName": ZHANG_SAN, "deviceName": "\u4e09\u53f7\u95e8"},
+        },
+        enabled=True,
+    )
+    service = make_service_with_llm(tools, llm)
+
+    response = await service.do_execute(
+        AgentRequestV4(question="\u968f\u4fbf\u4e00\u53e5\u89c4\u5219\u8bc6\u522b\u4e0d\u51fa\u7684\u8bdd"),
+        "100",
+    )
+
+    assert response.status == "ok"
+    assert llm.calls
+    assert tools.calls[0][0] == "diagnose_access_issue"
+    assert tools.calls[0][1]["slots"]["personName"] == ZHANG_SAN
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_falls_back_to_rule_understanding() -> None:
+    class FailingLlm(FakeLlmV4):
+        async def understand_right_agent_v4(
+            self,
+            *,
+            question: str,
+            intents: tuple[str, ...],
+            slot_names: tuple[str, ...],
+        ) -> dict[str, Any] | None:
+            raise RuntimeError("llm down")
+
+    tools = FakeToolsV4()
+    tools.results["diagnose_access_issue"].append(
+        {"diagnosis": {"mainCause": "DEVICE_OFFLINE", "mainCauseName": "\u8bbe\u5907\u79bb\u7ebf"}}
+    )
+    service = make_service_with_llm(tools, FailingLlm(enabled=True))
+
+    response = await service.do_execute(
+        AgentRequestV4(question=f"{ZHANG_SAN}\u4e09\u53f7\u95e8\u6253\u4e0d\u5f00"),
+        "100",
+    )
+
+    assert response.status == "ok"
+    assert tools.calls[0][0] == "diagnose_access_issue"
 
 
 @pytest.mark.asyncio

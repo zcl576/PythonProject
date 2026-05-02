@@ -30,6 +30,8 @@ class RightToolsV4:
             )
         if tool_name == "diagnose_access_issue":
             return await self.diagnose_access_issue(project_id, slots)
+        if tool_name == "query_permission":
+            return await self.query_permission(project_id, slots)
         if tool_name == "renew_permission":
             return await self.renew_permission(project_id, slots)
         return {
@@ -70,6 +72,13 @@ class RightToolsV4:
         slots: dict[str, Any],
     ) -> dict[str, Any]:
         return await self._client.renew_permission(project_id, self._clean(slots))
+
+    async def query_permission(
+        self,
+        project_id: int,
+        slots: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._client.query_permission(project_id, self._clean(slots))
 
     @staticmethod
     def _clean(payload: dict[str, Any]) -> dict[str, Any]:

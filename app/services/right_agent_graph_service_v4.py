@@ -9,6 +9,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
+from app.clients.llm_client import LlmClient
 from app.config import get_settings
 from app.memory.langgraph_mysql_checkpoint_v4 import get_v4_mysql_checkpointer
 from app.schemas.right_schema_v4 import (
@@ -55,11 +56,13 @@ class RightAgentGraphServiceV4:
         tools: RightToolsV4 | None = None,
         policy: RightAgentPolicyCheckerV4 | None = None,
         checkpointer: Any | None = None,
+        llm: LlmClient | None = None,
     ) -> None:
         self._settings = get_settings()
         self._tools = tools or RightToolsV4()
         self._policy = policy or RightAgentPolicyCheckerV4()
         self._checkpointer = checkpointer
+        self._llm = llm or LlmClient()
         self._graph = None
 
     async def do_execute(
@@ -176,9 +179,45 @@ class RightAgentGraphServiceV4:
                 "follow_up_question": "请提供姓名、手机号、卡号、设备名称或门禁点。",
                 "needs_input": ["question"],
             }
+        understood = await self._understand_with_llm(question)
+        if understood:
+            return understood
         return {
             "intent": self._classify_intent(question),
             "slots": self._extract_slots(question),
+        }
+
+    async def _understand_with_llm(self, question: str) -> RightAgentStateV4 | None:
+        if not self._llm.enabled:
+            return None
+        try:
+            understood = await self._llm.understand_right_agent_v4(
+                question=question,
+                intents=tuple(INTENT_TO_TOOL.keys()),
+                slot_names=(
+                    "personId",
+                    "telephone",
+                    "cardNo",
+                    "deviceId",
+                    "deviceName",
+                    "deviceSn",
+                    "personName",
+                ),
+            )
+        except Exception:
+            return None
+        if not understood:
+            return None
+
+        intent = understood.get("intent")
+        if not isinstance(intent, str) or intent not in INTENT_TO_TOOL:
+            intent = "unsupported"
+        raw_slots = understood.get("slots")
+        slots = self._clean_slots(raw_slots if isinstance(raw_slots, dict) else {})
+        return {
+            "intent": intent,
+            "slots": slots,
+            "data": {"understanding": {"source": "llm"}},
         }
 
     async def _plan_task(self, state: RightAgentStateV4) -> RightAgentStateV4:
@@ -508,6 +547,24 @@ class RightAgentGraphServiceV4:
         if device:
             slots["deviceName"] = device.group(1)
         return slots
+
+    @staticmethod
+    def _clean_slots(slots: dict[str, Any]) -> dict[str, Any]:
+        allowed = {
+            "personId",
+            "telephone",
+            "cardNo",
+            "deviceId",
+            "deviceName",
+            "deviceSn",
+            "personName",
+        }
+        cleaned: dict[str, Any] = {}
+        for key, value in slots.items():
+            if key not in allowed or value in (None, ""):
+                continue
+            cleaned[key] = value
+        return cleaned
 
     @staticmethod
     def _missing_any_required(required: tuple[str, ...], slots: dict[str, Any]) -> list[str]:

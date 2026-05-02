@@ -61,6 +61,25 @@ class LlmClient:
         content = await self._json_chat(messages, temperature=0)
         return self._parse_json(content)
 
+    async def understand_right_agent_v4(
+        self,
+        *,
+        question: str,
+        intents: tuple[str, ...],
+        slot_names: tuple[str, ...],
+    ) -> dict[str, Any] | None:
+        if not self._enabled or not question.strip():
+            return None
+        messages = [
+            {
+                "role": "system",
+                "content": self._right_agent_v4_prompt(intents, slot_names),
+            },
+            {"role": "user", "content": question},
+        ]
+        content = await self._json_chat(messages, temperature=0)
+        return self._parse_right_agent_v4_json(content, intents, slot_names)
+
     async def explain_diagnosis(self, question: str | None, normalized: dict[str, Any], result: dict[str, Any]) -> str | None:
         """生成诊断解释
         
@@ -171,6 +190,61 @@ class LlmClient:
             "deviceSn": parsed.get("deviceSn") or parsed.get("device_sn"),
             "personName": parsed.get("personName") or parsed.get("person_name"),
         }
+
+    def _parse_right_agent_v4_json(
+        self,
+        content: str,
+        intents: tuple[str, ...],
+        slot_names: tuple[str, ...],
+    ) -> dict[str, Any] | None:
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            log.error("json杞崲寮傚父")
+            return None
+        if not isinstance(parsed, dict):
+            return None
+
+        intent = parsed.get("intent")
+        if intent not in intents:
+            intent = "unsupported"
+
+        raw_slots = parsed.get("slots") or {}
+        if not isinstance(raw_slots, dict):
+            raw_slots = {}
+        aliases = {
+            "person_id": "personId",
+            "card_no": "cardNo",
+            "device_id": "deviceId",
+            "device_name": "deviceName",
+            "device_sn": "deviceSn",
+            "person_name": "personName",
+        }
+        allowed = set(slot_names)
+        slots: dict[str, Any] = {}
+        for key, value in raw_slots.items():
+            normalized_key = aliases.get(key, key)
+            if normalized_key not in allowed or value in (None, ""):
+                continue
+            slots[normalized_key] = value
+        return {"intent": intent, "slots": slots}
+
+    @staticmethod
+    def _right_agent_v4_prompt(
+        intents: tuple[str, ...],
+        slot_names: tuple[str, ...],
+    ) -> str:
+        return (
+            "You are an access-control assistant intent and slot extractor. "
+            "Return only valid JSON, with no markdown and no explanation. "
+            f"Allowed intent values: {', '.join(intents)}. "
+            "Use unsupported when the user request does not match an allowed intent. "
+            f"Allowed slot keys: {', '.join(slot_names)}. "
+            "Extract only values explicitly present or clearly implied by the user. "
+            "Do not invent IDs. Keep original casing for IDs, card numbers, and SNs. "
+            'Output shape: {"intent":"access_issue","slots":{"personName":"张三","deviceName":"三号门"}}.'
+        )
+
     def _get_prompt(self) -> str:
         """获取 LLM 提示
 

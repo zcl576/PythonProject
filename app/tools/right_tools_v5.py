@@ -1,27 +1,78 @@
-"""权限工具执行器 V5 版本
+from typing import Any, Awaitable, Callable
 
-本模块提供权限相关工具的执行能力，包括人员查询、设备查询、权限查询和权限续期。
-"""
-from typing import Any
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
 
 from app.clients.estate_ai_client_v5 import EstateAiClientV5
-from app.services.right_agent_metadata_v5 import TOOL_METADATA_V5
+from app.services.right_agent_metadata_v5 import READ_TARGET_TOOLS_V5, TOOL_METADATA_V5
+
+ToolHandlerV5 = Callable[[int, dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+class SearchPersonInputV5(BaseModel):
+    project_id: int = Field(description="项目 ID")
+    personId: str | None = Field(default=None, description="人员 ID")
+    personName: str | None = Field(default=None, description="人员姓名")
+    telephone: str | None = Field(default=None, description="手机号")
+
+
+class SearchDeviceInputV5(BaseModel):
+    project_id: int = Field(description="项目 ID")
+    deviceSn: str | None = Field(default=None, description="设备 SN")
+    deviceId: str | None = Field(default=None, description="设备 ID")
+    deviceName: str | None = Field(default=None, description="设备名称")
+
+
+class QueryPermissionInputV5(BaseModel):
+    project_id: int = Field(description="项目 ID")
+    personId: str = Field(description="人员 ID")
+    deviceSn: str = Field(description="设备 SN")
 
 
 class RightToolsV5:
-    """权限工具执行器 V5 版本
-
-    封装了与权限相关的工具调用，通过 EstateAiClientV5 客户端执行实际操作。
-    支持的工具包括：人员查询、设备查询、权限查询、权限续期。
-    """
-
     def __init__(self, client: EstateAiClientV5 | None = None) -> None:
-        """初始化工具执行器
-
-        Args:
-            client: EstateAiClientV5 客户端实例，用于调用底层 API
-        """
         self._client = client or EstateAiClientV5()
+        self._registry: dict[str, ToolHandlerV5] = {
+            "search_person": self.search_person,
+            "search_device": self.search_device,
+            "query_permission": self.query_permission,
+            "renew_permission": self.renew_permission,
+        }
+
+    @property
+    def registry(self) -> dict[str, ToolHandlerV5]:
+        return dict(self._registry)
+
+    def read_langchain_tools(self) -> list[StructuredTool]:
+        return [
+            StructuredTool.from_function(
+                coroutine=self.search_person_tool,
+                name="search_person",
+                description=(
+                    "查询人员信息。用于根据人员姓名、手机号或人员 ID 获取 personId。"
+                    "这是只读工具。"
+                ),
+                args_schema=SearchPersonInputV5,
+            ),
+            StructuredTool.from_function(
+                coroutine=self.search_device_tool,
+                name="search_device",
+                description=(
+                    "查询门禁设备信息。用于根据设备名称、设备 ID 或设备 SN 获取 deviceSn。"
+                    "这是只读工具。"
+                ),
+                args_schema=SearchDeviceInputV5,
+            ),
+            StructuredTool.from_function(
+                coroutine=self.query_permission_tool,
+                name="query_permission",
+                description=(
+                    "查询人员对门禁设备的权限状态。需要 personId 和 deviceSn。"
+                    "这是只读工具；如果结果显示权限过期，续期仍需用户确认后由系统执行。"
+                ),
+                args_schema=QueryPermissionInputV5,
+            ),
+        ]
 
     async def execute(
         self,
@@ -29,52 +80,65 @@ class RightToolsV5:
         project_id: int,
         slots: dict[str, Any],
     ) -> dict[str, Any]:
-        """执行指定的工具
-
-        根据工具名称路由到对应的处理方法。
-
-        Args:
-            tool_name: 工具名称
-            project_id: 项目ID
-            slots: 槽位数据（包含工具所需的参数）
-
-        Returns:
-            工具执行结果
-        """
-        if tool_name not in TOOL_METADATA_V5:
+        if tool_name not in TOOL_METADATA_V5 or tool_name not in self._registry:
             return {
                 "status": "not_configured",
                 "tool": tool_name,
                 "message": "Unknown v5 tool.",
             }
-        if tool_name == "search_person":
-            return await self.search_person(project_id, slots)
-        if tool_name == "search_device":
-            return await self.search_device(project_id, slots)
-        if tool_name == "query_permission":
-            return await self.query_permission(project_id, slots)
-        if tool_name == "renew_permission":
-            return await self.renew_permission(project_id, slots)
-        return {
-            "status": "not_configured",
-            "tool": tool_name,
-            "message": "Tool executor is not configured.",
-        }
+        return await self._registry[tool_name](project_id, slots)
+
+    async def search_person_tool(
+        self,
+        project_id: int,
+        personId: str | None = None,
+        personName: str | None = None,
+        telephone: str | None = None,
+    ) -> dict[str, Any]:
+        return await self.search_person(
+            project_id,
+            {
+                "personId": personId,
+                "personName": personName,
+                "telephone": telephone,
+            },
+        )
+
+    async def search_device_tool(
+        self,
+        project_id: int,
+        deviceSn: str | None = None,
+        deviceId: str | None = None,
+        deviceName: str | None = None,
+    ) -> dict[str, Any]:
+        return await self.search_device(
+            project_id,
+            {
+                "deviceSn": deviceSn,
+                "deviceId": deviceId,
+                "deviceName": deviceName,
+            },
+        )
+
+    async def query_permission_tool(
+        self,
+        project_id: int,
+        personId: str,
+        deviceSn: str,
+    ) -> dict[str, Any]:
+        return await self.query_permission(
+            project_id,
+            {
+                "personId": personId,
+                "deviceSn": deviceSn,
+            },
+        )
 
     async def search_person(
         self,
         project_id: int,
         slots: dict[str, Any],
     ) -> dict[str, Any]:
-        """查询人员信息
-
-        Args:
-            project_id: 项目ID
-            slots: 槽位数据，包含 personId、personName、telephone
-
-        Returns:
-            人员查询结果
-        """
         return await self._client.search_person(
             project_id,
             self._clean(
@@ -91,15 +155,6 @@ class RightToolsV5:
         project_id: int,
         slots: dict[str, Any],
     ) -> dict[str, Any]:
-        """查询设备信息
-
-        Args:
-            project_id: 项目ID
-            slots: 槽位数据，包含 deviceSn、deviceId、deviceName
-
-        Returns:
-            设备查询结果
-        """
         return await self._client.search_device(
             project_id,
             self._clean(
@@ -116,43 +171,35 @@ class RightToolsV5:
         project_id: int,
         slots: dict[str, Any],
     ) -> dict[str, Any]:
-        """查询权限信息
-
-        Args:
-            project_id: 项目ID
-            slots: 槽位数据，包含人员和设备信息
-
-        Returns:
-            权限查询结果
-        """
-        return await self._client.query_permission(project_id, self._clean(slots))
+        return await self._client.query_permission(
+            project_id,
+            self._clean(
+                {
+                    "personId": slots.get("personId"),
+                    "deviceSn": slots.get("deviceSn"),
+                }
+            ),
+        )
 
     async def renew_permission(
         self,
         project_id: int,
         slots: dict[str, Any],
     ) -> dict[str, Any]:
-        """续期权限
-
-        Args:
-            project_id: 项目ID
-            slots: 槽位数据，包含人员和设备信息
-
-        Returns:
-            权限续期结果
-        """
-        return await self._client.renew_permission(project_id, self._clean(slots))
+        return await self._client.renew_permission(
+            project_id,
+            self._clean(
+                {
+                    "personId": slots.get("personId"),
+                    "deviceSn": slots.get("deviceSn"),
+                }
+            ),
+        )
 
     @staticmethod
     def _clean(payload: dict[str, Any]) -> dict[str, Any]:
-        """清理请求载荷
-
-        移除空值、空字符串、空列表和空字典。
-
-        Args:
-            payload: 原始载荷
-
-        Returns:
-            清理后的载荷
-        """
         return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+
+
+def read_langchain_tools_v5(client: EstateAiClientV5 | None = None) -> list[StructuredTool]:
+    return RightToolsV5(client=client).read_langchain_tools()

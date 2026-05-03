@@ -8,6 +8,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from app.api import right_routes_v5
 from app.schemas.right_schema_v5 import AgentRequestV5, AgentResponseV5
 from app.services.right_agent_graph_service_v5 import RightAgentGraphServiceV5
+from app.tools.right_tools_v5 import RightToolsV5
 
 ZHANG_SAN = "\u5f20\u4e09"
 
@@ -102,6 +103,23 @@ def query_permission_plan(slots: dict[str, Any]) -> dict[str, Any]:
         "target_tool": "query_permission",
         "slots": slots,
     }
+
+
+def test_right_tools_v5_exposes_registry_and_read_langchain_tools() -> None:
+    tools = RightToolsV5()
+
+    assert set(tools.registry) == {
+        "search_person",
+        "search_device",
+        "query_permission",
+        "renew_permission",
+    }
+    assert {tool.name for tool in tools.read_langchain_tools()} == {
+        "search_person",
+        "search_device",
+        "query_permission",
+    }
+    assert "renew_permission" not in {tool.name for tool in tools.read_langchain_tools()}
 
 
 @pytest.mark.asyncio

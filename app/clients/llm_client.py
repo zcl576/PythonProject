@@ -170,6 +170,61 @@ class LlmClient:
         ]
         return await self._text_chat(messages, temperature=0.2)
 
+    async def understand_right_agent_v6(
+        self,
+        *,
+        question: str,
+        target_tools: tuple[str, ...],
+        slot_names: tuple[str, ...],
+    ) -> dict[str, Any] | None:
+        if not self._enabled or not question.strip():
+            return None
+        messages = [
+            {
+                "role": "system",
+                "content": self._right_agent_v6_planner_prompt(target_tools, slot_names),
+            },
+            {"role": "user", "content": question},
+        ]
+        content = await self._json_chat(messages, temperature=0)
+        return self._parse_right_agent_v5_plan(content, target_tools, slot_names)
+
+    async def answer_right_agent_v6(
+        self,
+        *,
+        question: str | None,
+        slots: dict[str, Any],
+        tool_history: list[dict[str, Any]],
+        permission_status: str | None = None,
+        permission_result: dict[str, Any] | None = None,
+        write_result: dict[str, Any] | None = None,
+        policy: dict[str, Any] | None = None,
+    ) -> str | None:
+        if not self._enabled:
+            return None
+        payload = {
+            "question": question,
+            "slots": self._without_internal_fields(slots),
+            "permission_status": permission_status,
+            "permission_result": self._without_internal_fields(permission_result or {}),
+            "write_result": self._without_internal_fields(write_result or {}),
+            "policy": self._without_internal_fields(policy or {}),
+            "tool_history": self._without_internal_fields(tool_history),
+        }
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是门禁权限运营助手。请根据给定工具结果生成一句面向用户的中文回答。"
+                    "只能使用输入中提供的信息，不要编造权限状态或操作结果。"
+                    "不要暴露 project_id、session_id、trace_id、原始 JSON 或内部编排字段。"
+                    "只有 write_result 明确表示成功时，才能说已经完成写操作。"
+                ),
+            },
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+        return await self._text_chat(messages, temperature=0.2)
+
     async def explain_diagnosis(self, question: str | None, normalized: dict[str, Any], result: dict[str, Any]) -> str | None:
         """生成诊断解释
         
@@ -464,6 +519,28 @@ class LlmClient:
             "编号、SN、卡号、ID 必须保留原始大小写。"
             '输出格式示例：{"intent":"access_issue","target_tool":"query_permission",'
             '"slots":{"personName":"张三","deviceSn":"D001"}}。'
+        )
+
+    @staticmethod
+    def _right_agent_v6_planner_prompt(
+        target_tools: tuple[str, ...],
+        slot_names: tuple[str, ...],
+    ) -> str:
+        return (
+            "你是门禁权限 Agent 的规划器。"
+            "只能返回合法 JSON，不要输出 Markdown、解释、注释或代码块。"
+            f"target_tool 只能从以下值中选择：{', '.join(target_tools)}。"
+            f"slots 只能包含以下字段：{', '.join(slot_names)}。"
+            "请选择用户最终想完成的业务目标，不要输出补槽工具链。"
+            "查询用户信息选择 search_person；查询设备信息选择 search_device；"
+            "查询权限、门打不开、刷不开、为什么不能进门选择 query_permission；"
+            "权限过期需要延期选择 extend_permission；权限被禁用需要开启选择 enable_permission；"
+            "禁用权限选择 disable_permission；开通新权限选择 grant_permission；回收权限选择 revoke_permission。"
+            "写操作只是目标意图，系统会先查询权限、校验策略并要求用户确认后才执行。"
+            "只抽取用户明确提供或上下文可以确定的信息，不要猜测 personId、deviceSn、deviceId、cardNo。"
+            "编号、SN、卡号、ID 必须保留原始大小写。"
+            '输出格式示例：{"intent":"extend_permission","target_tool":"extend_permission",'
+            '"slots":{"personName":"张三","deviceName":"三号门","durationDays":30}}。'
         )
 
     def _get_prompt(self) -> str:

@@ -10,3 +10,4 @@ app.include_router(__import__("app.api.right_routes_v2", fromlist=["router"]).ro
 app.include_router(__import__("app.api.right_routes_v3", fromlist=["router"]).router)
 app.include_router(__import__("app.api.right_routes_v4", fromlist=["router"]).router)
 app.include_router(__import__("app.api.right_routes_v5", fromlist=["router"]).router)
+app.include_router(__import__("app.api.right_routes_v6", fromlist=["router"]).router)

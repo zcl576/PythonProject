@@ -1,7 +1,8 @@
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage, ToolMessage
+from langchain_core.tools import Tool
 from langchain_deepseek import ChatDeepSeek
 from langgraph.constants import START, END
-from langgraph.graph import StateGraph
+from langgraph.graph import StateGraph, add_messages
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import SecretStr
 
@@ -13,14 +14,17 @@ from app.memory.mysql_memory import get_mysql_saver
 from app.schemas.right_schema import AgentResponse, AgentRequest
 from app.tools.right_tool import get_person_info
 from functools import lru_cache
-from typing import TypedDict
+from typing import TypedDict, Annotated
 
 
 class StateData(TypedDict,total=False):
     question: str
+    messages: Annotated[list[BaseMessage],add_messages]
     llm_unstarted_result: str
     tool_result: str
     llm_answer: str
+    call_tool_name: str
+    params: dict
 
 
 def _route_unstarted(state_data:StateData) -> str:
@@ -34,6 +38,8 @@ def _route_unstarted(state_data:StateData) -> str:
 
 
 class RightAgentService:
+    prompt = ("你是门禁权限运营助手。请根据给定工具结果生成一句面向用户的中文回答。只能使用输入中提供的信息，不要编造权限状态或操作结果。"
+              "不要暴露 project_id、session_id、trace_id、原始 JSON 或内部编排字段。只有 write_result 明确表示成功时，才能说已经完成写操作。")
     def __init__(self):
         self._tool = [get_person_info]
         self._settings = get_settings()
@@ -57,18 +63,26 @@ class RightAgentService:
 
     async def unstarted(self,state_data:StateData) -> StateData:
         question = state_data.get("question")
-        result = await self._json_chat(question)
-        return StateData(llm_unstarted_result=result)
+        messages = state_data.get("messages")
+        messages = [SystemMessage(content=self._get_system_prompt()),*messages,HumanMessage(content=question)]
+        result = await self._json_chat(messages)
+        return StateData(llm_unstarted_result=result,messages=[HumanMessage(content=question)])
 
     async def answer(self,state_data:StateData) -> StateData:
-        data = state_data.get("tool_result") if state_data.get("tool_result") else state_data.get("question")
-        chat = await self._text_chat(data)
-        return StateData(llm_answer=chat)
+        messages = state_data.get("messages")
+        tool_result = state_data.get("tool_result")
+        if tool_result:
+            messages = [SystemMessage(content=RightAgentService.prompt), *messages, ToolMessage(content=tool_result)]
+            chat = await self._text_chat(messages)
+        else:
+            chat = await self._text_chat([SystemMessage(content=RightAgentService.prompt),*messages])
+        return StateData(llm_answer=chat,messages=[AIMessage(content=chat)])
 
     async def call_tool(self,state_data:StateData) -> StateData:
+
         return state_data
 
-    async def _text_chat(self, question: str) -> str:
+    async def _text_chat(self, messages:[BaseMessage]) -> str:
         """与 LLM 服务进行文本对话
 
         向 LLM 服务发送请求并获取文本响应，不要求 JSON 格式。
@@ -88,13 +102,10 @@ class RightAgentService:
             timeout=self._settings.llm_timeout_seconds,
             max_retries=2,
         )
-        response = await model.ainvoke(input=[SystemMessage(content="你是门禁权限运营助手。请根据给定工具结果生成一句面向用户的中文回答。"
-                    "只能使用输入中提供的信息，不要编造权限状态或操作结果。"
-                    "不要暴露 project_id、session_id、trace_id、原始 JSON 或内部编排字段。"
-                    "只有 write_result 明确表示成功时，才能说已经完成写操作。"), HumanMessage(content=question)])
+        response = await model.ainvoke(input=messages)
         return str(response.content)
 
-    async def _json_chat(self, question:str) -> str:
+    async def _json_chat(self, messages:[BaseMessage]) -> str:
         """与 LLM 服务进行对话
 
         向 LLM 服务发送请求并获取响应。
@@ -115,7 +126,7 @@ class RightAgentService:
             max_retries=2,
             model_kwargs={"response_format": {"type": "json_object"}},
         )
-        response = await model.ainvoke(input=[SystemMessage(content=self._get_system_prompt()),HumanMessage(content=question)])
+        response = await model.ainvoke(input=messages)
         return str(response.content)
 
     @lru_cache

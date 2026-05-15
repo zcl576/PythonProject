@@ -81,6 +81,8 @@ class RightAgentStateV6(TypedDict, total=False):
         needs_input: 需要用户输入的字段列表
         choices: 选择选项列表
         confirm: 确认信息
+        pending_task: 待补槽任务
+        focus_context: 当前对话焦点对象
         data: 附加数据
     """
     session_id: str
@@ -104,6 +106,8 @@ class RightAgentStateV6(TypedDict, total=False):
     needs_input: list[str]
     choices: list[dict[str, Any]]
     confirm: dict[str, Any] | None
+    pending_task: dict[str, Any] | None
+    focus_context: dict[str, Any] | None
     data: dict[str, Any]
 
 
@@ -199,9 +203,7 @@ class RightAgentGraphServiceV6:
                         "session_id": session_id,
                         "project_id": effective_project_id,
                         "question": request.question,
-                        "slots": {},
                         "choices": [],
-                        "data": {},
                         "needs_input": [],
                         "tool_history": [],
                     },
@@ -303,9 +305,8 @@ class RightAgentGraphServiceV6:
         if not question:
             return {
                 "status": "need_more_info",
-                "answer": "Please describe the permission request.",
-                "follow_up_question": "Please provide a person, device, or permission question.",
                 "needs_input": ["question"],
+                "data": {"reason": "empty_question"},
             }
 
         # 调用 LLM 进行意图理解
@@ -314,6 +315,7 @@ class RightAgentGraphServiceV6:
                 question=question,
                 target_tools=tuple(TOOL_METADATA_V6.keys()),
                 slot_names=SLOT_NAMES_V6,
+                pending_task=self._planner_context(state),
             )
         except Exception as exc:
             return {"status": "error", "answer": "", "data": {"llm_error": str(exc), "stage": "planner"}}
@@ -322,11 +324,33 @@ class RightAgentGraphServiceV6:
         if not plan:
             return {"status": "error", "answer": "", "data": {"llm_error": "planner returned no plan"}}
 
+        previous_data = state.get("data") or {}
+        previous_slots = state.get("slots") or {}
+        current_slots = self._clean_slots(plan.get("slots") or {})
+        requested_tool = plan.get("target_tool") or ""
+        continue_previous = self._should_continue_previous(state, plan, current_slots)
+        if continue_previous:
+            continued_tool = self._continued_target_tool(state, requested_tool)
+            requested_tool = continued_tool or requested_tool
+            slots = {**self._continued_slots(state), **current_slots}
+            data = {**previous_data, "planner": plan, "continue_previous": True}
+        else:
+            slots = current_slots
+            data = {"planner": plan, "continue_previous": False}
+
         return {
             "intent": plan.get("intent"),
-            "requested_tool": plan.get("target_tool") or "",
-            "slots": self._clean_slots(plan.get("slots") or {}),
-            "data": {"planner": plan},
+            "requested_tool": requested_tool,
+            "slots": slots,
+            "status": "",
+            "answer": "",
+            "follow_up_question": None,
+            "choices": [],
+            "confirm": None,
+            "needs_input": [],
+            "tool_result": {},
+            "pending_task": None,
+            "data": data,
         }
 
     async def _normalize_plan(self, state: RightAgentStateV6) -> RightAgentStateV6:
@@ -346,10 +370,24 @@ class RightAgentGraphServiceV6:
 
         requested = state.get("requested_tool") or ""
         intent = state.get("intent")
+        data = state.get("data") or {}
+
+        if requested == "direct_answer" or intent == "direct_answer":
+            direct_answer = ""
+            planner = data.get("planner")
+            if isinstance(planner, dict):
+                direct_answer = str(planner.get("answer") or "").strip()
+            return {
+                "target_tool": "",
+                "current_tool": "",
+                "pending_write_tool": None,
+                "status": "direct_answer",
+                "answer": direct_answer or "这个问题没有匹配到需要调用的门禁工具，你可以换个说法再问我。",
+                "data": data,
+            }
 
         # 将意图/请求工具映射到实际工具
         target = PLANNER_TARGET_TO_TOOL_V6.get(requested) or PLANNER_TARGET_TO_TOOL_V6.get(str(intent))
-        data = state.get("data") or {}
 
         # 处理写工具（需要先查询权限）
         if target in WRITE_TOOLS_V6:
@@ -387,7 +425,7 @@ class RightAgentGraphServiceV6:
         Returns:
             下一个节点名称
         """
-        if state.get("status") in ("need_more_info", "error"):
+        if state.get("status") in ("need_more_info", "error", "direct_answer"):
             return "final_llm_answer"
         return "resolve_slots"
 
@@ -414,11 +452,23 @@ class RightAgentGraphServiceV6:
         # 检查可选必填槽位
         missing_any = self._missing_any_required(metadata.any_required_slots, slots)
         if missing_any:
+            pending_task = self._make_pending_task(
+                target_tool=current_tool,
+                current_tool=current_tool,
+                known_slots=slots,
+                missing_slots=missing_any,
+                reason="missing_any_required",
+            )
             return {
                 "status": "need_more_info",
-                "answer": "Missing information for the next tool.",
-                "follow_up_question": f"Please provide one of: {', '.join(missing_any)}.",
                 "needs_input": missing_any,
+                "pending_task": pending_task,
+                "data": {
+                    **(state.get("data") or {}),
+                    "reason": "missing_any_required",
+                    "current_tool": current_tool,
+                    "missing_slots": missing_any,
+                },
             }
 
         # 检查必填槽位
@@ -429,6 +479,30 @@ class RightAgentGraphServiceV6:
             # 尝试使用解析器获取缺失槽位
             resolver = metadata.slot_resolvers.get(slot)
             if resolver:
+                resolver_metadata = TOOL_METADATA_V6[resolver]
+                resolver_missing_any = self._missing_any_required(resolver_metadata.any_required_slots, slots)
+                if resolver_missing_any:
+                    pending_task = self._make_pending_task(
+                        target_tool=state.get("target_tool") or current_tool,
+                        current_tool=current_tool,
+                        known_slots=slots,
+                        missing_slots=resolver_missing_any,
+                        reason="missing_resolver_input",
+                        resolver_tool=resolver,
+                    )
+                    return {
+                        "status": "need_more_info",
+                        "needs_input": resolver_missing_any,
+                        "pending_task": pending_task,
+                        "data": {
+                            **(state.get("data") or {}),
+                            "reason": "missing_resolver_input",
+                            "current_tool": current_tool,
+                            "missing_slot": slot,
+                            "resolver_tool": resolver,
+                            "missing_slots": resolver_missing_any,
+                        },
+                    }
                 return {
                     "current_tool": resolver,
                     "status": "",
@@ -437,11 +511,23 @@ class RightAgentGraphServiceV6:
                 }
 
             # 请求用户输入
+            pending_task = self._make_pending_task(
+                target_tool=current_tool,
+                current_tool=current_tool,
+                known_slots=slots,
+                missing_slots=[slot],
+                reason="missing_required_slot",
+            )
             return {
                 "status": "need_more_info",
-                "answer": "Missing required information.",
-                "follow_up_question": f"Please provide {slot}.",
                 "needs_input": [slot],
+                "pending_task": pending_task,
+                "data": {
+                    **(state.get("data") or {}),
+                    "reason": "missing_required_slot",
+                    "current_tool": current_tool,
+                    "missing_slots": [slot],
+                },
             }
 
         return {"current_tool": current_tool, "status": ""}
@@ -581,7 +667,8 @@ class RightAgentGraphServiceV6:
                 kind="person",
                 candidates=people,
                 choices=self._person_choices(people),
-                empty_answer="No matching person was found.",
+                empty_reason="person_not_found",
+                empty_data=self._not_found_data("person", state.get("slots") or {}),
             )
 
             # 如果有状态（错误或需要选择），直接返回
@@ -603,7 +690,8 @@ class RightAgentGraphServiceV6:
                 kind="device",
                 candidates=devices,
                 choices=self._device_choices(devices),
-                empty_answer="No matching device was found.",
+                empty_reason="device_not_found",
+                empty_data=self._not_found_data("device", state.get("slots") or {}),
             )
 
             # 如果有状态（错误或需要选择），直接返回
@@ -646,7 +734,8 @@ class RightAgentGraphServiceV6:
             kind="person",
             candidates=people,
             choices=self._person_choices(people),
-            empty_answer="No matching person was found.",
+            empty_reason="person_not_found",
+            empty_data=self._not_found_data("person", state.get("slots") or {}),
         )
 
         # 如果需要用户选择或有错误，返回选择状态
@@ -657,6 +746,8 @@ class RightAgentGraphServiceV6:
             "status": "ok",
             "slots": {**(state.get("slots") or {}), **self._person_slots(selected["data"])},
             "tool_history": history,
+            "focus_context": self._make_focus_context("person", selected["data"]),
+            "pending_task": None,
             "data": {**data, "person": selected["data"]},
         }
 
@@ -685,7 +776,8 @@ class RightAgentGraphServiceV6:
             kind="device",
             candidates=devices,
             choices=self._device_choices(devices),
-            empty_answer="No matching device was found.",
+            empty_reason="device_not_found",
+            empty_data=self._not_found_data("device", state.get("slots") or {}),
         )
 
         # 如果需要用户选择或有错误，返回选择状态
@@ -696,6 +788,8 @@ class RightAgentGraphServiceV6:
             "status": "ok",
             "slots": {**(state.get("slots") or {}), **self._device_slots(selected["data"])},
             "tool_history": history,
+            "focus_context": self._make_focus_context("device", selected["data"]),
+            "pending_task": None,
             "data": {**data, "device": selected["data"]},
         }
 
@@ -814,20 +908,20 @@ class RightAgentGraphServiceV6:
         Returns:
             更新后的状态，包含最终回答
         """
-        # 如果已有回答，直接返回
-        if state.get("answer"):
-            return {}
-
-        # 如果需要更多信息，直接返回（使用已有的追问问题）
-        if state.get("status") == "need_more_info" and state.get("follow_up_question"):
+        # direct_answer 的内容已经由 planner LLM 生成，不再二次改写。
+        if state.get("status") == "direct_answer" and state.get("answer"):
             return {}
 
         # 调用 LLM 生成最终回答
         try:
             answer = await self._llm.answer_right_agent_v6(
                 question=state.get("question"),
+                status=state.get("status"),
                 slots=state.get("slots") or {},
                 tool_history=state.get("tool_history") or [],
+                needs_input=state.get("needs_input") or [],
+                follow_up_question=state.get("follow_up_question"),
+                data=state.get("data") or {},
                 permission_status=state.get("permission_status") or (state.get("data") or {}).get("permission_status"),
                 permission_result=state.get("permission_result") or (state.get("data") or {}).get("permission_result"),
                 write_result=state.get("write_result") or (state.get("data") or {}).get("write_result"),
@@ -874,6 +968,147 @@ class RightAgentGraphServiceV6:
         if any(slots.get(slot) for slot in required):
             return []
         return list(required)
+
+    def _pending_task(self, state: RightAgentStateV6) -> dict[str, Any] | None:
+        """构建给 planner 判断是否延续上一轮的待补槽上下文。"""
+        explicit = state.get("pending_task")
+        if isinstance(explicit, dict):
+            return explicit
+        if state.get("status") != "need_more_info":
+            return None
+        data = state.get("data") or {}
+        missing_slots = data.get("missing_slots") or state.get("needs_input") or []
+        if not missing_slots:
+            return None
+        target_tool = state.get("target_tool") or data.get("after_resolver_tool") or data.get("current_tool")
+        if target_tool not in TOOL_METADATA_V6:
+            return None
+        return {
+            "target_tool": target_tool,
+            "current_tool": state.get("current_tool"),
+            "known_slots": state.get("slots") or {},
+            "missing_slots": missing_slots,
+            "reason": data.get("reason"),
+            "resolver_tool": data.get("resolver_tool"),
+        }
+
+    @staticmethod
+    def _make_pending_task(
+        *,
+        target_tool: str,
+        current_tool: str,
+        known_slots: dict[str, Any],
+        missing_slots: list[str],
+        reason: str,
+        resolver_tool: str | None = None,
+    ) -> dict[str, Any]:
+        task = {
+            "target_tool": target_tool,
+            "current_tool": current_tool,
+            "known_slots": known_slots,
+            "missing_slots": missing_slots,
+            "reason": reason,
+        }
+        if resolver_tool:
+            task["resolver_tool"] = resolver_tool
+        return task
+
+    def _planner_context(self, state: RightAgentStateV6) -> dict[str, Any] | None:
+        """构建给 planner 的多轮上下文。"""
+        context: dict[str, Any] = {}
+        pending_task = self._pending_task(state)
+        if pending_task:
+            context["pending_task"] = pending_task
+        focus_context = self._focus_context(state)
+        if focus_context:
+            context["focus_context"] = focus_context
+        return context or None
+
+    def _focus_context(self, state: RightAgentStateV6) -> dict[str, Any] | None:
+        """构建上一轮已查询对象的焦点上下文。"""
+        explicit = state.get("focus_context")
+        if isinstance(explicit, dict):
+            return explicit
+        data = state.get("data") or {}
+        focus = data.get("focus")
+        if not isinstance(focus, dict):
+            return None
+        kind = focus.get("kind")
+        value = focus.get("data")
+        if not isinstance(value, dict):
+            return None
+        if kind == "device":
+            return {"kind": "device", "known_slots": self._device_slots(value), "data": value}
+        if kind == "person":
+            return {"kind": "person", "known_slots": self._person_slots(value), "data": value}
+        return None
+
+    def _make_focus_context(self, kind: str, value: dict[str, Any]) -> dict[str, Any] | None:
+        if kind == "device":
+            return {"kind": "device", "known_slots": self._device_slots(value), "data": value}
+        if kind == "person":
+            return {"kind": "person", "known_slots": self._person_slots(value), "data": value}
+        return None
+
+    def _should_continue_previous(
+        self,
+        state: RightAgentStateV6,
+        plan: dict[str, Any],
+        current_slots: dict[str, Any],
+    ) -> bool:
+        """LLM 判断为续问后，再用缺失槽位命中情况做二次校验。"""
+        if plan.get("continue_previous") is not True:
+            return False
+        pending_task = self._pending_task(state)
+        if pending_task:
+            if not current_slots:
+                return False
+            missing_slots = set(pending_task.get("missing_slots") or [])
+            if not missing_slots.intersection(current_slots):
+                return False
+            target_tool = pending_task.get("target_tool")
+            return target_tool in TOOL_METADATA_V6
+        focus_context = self._focus_context(state)
+        if not focus_context:
+            return False
+        target_tool = plan.get("target_tool")
+        if focus_context.get("kind") == "device":
+            return target_tool in ("search_device", "query_permission")
+        if focus_context.get("kind") == "person":
+            return target_tool in ("search_person", "query_permission")
+        return False
+
+    def _continued_target_tool(self, state: RightAgentStateV6, requested_tool: str) -> str | None:
+        pending_task = self._pending_task(state)
+        if pending_task:
+            return str(pending_task.get("target_tool") or requested_tool)
+        return requested_tool
+
+    def _continued_slots(self, state: RightAgentStateV6) -> dict[str, Any]:
+        pending_task = self._pending_task(state)
+        if pending_task:
+            return state.get("slots") or {}
+        focus_context = self._focus_context(state)
+        if focus_context:
+            known_slots = focus_context.get("known_slots")
+            return known_slots if isinstance(known_slots, dict) else {}
+        return {}
+
+    @staticmethod
+    def _not_found_data(kind: str, slots: dict[str, Any]) -> dict[str, Any]:
+        if kind == "person":
+            label = slots.get("personName") or slots.get("telephone") or slots.get("personId")
+            return {
+                "lookup_type": "person",
+                "lookup_value": label,
+                "suggested_inputs": ["personName", "telephone", "personId"],
+            }
+        label = slots.get("deviceName") or slots.get("deviceSn") or slots.get("deviceId")
+        return {
+            "lookup_type": "device",
+            "lookup_value": label,
+            "suggested_inputs": ["deviceName", "deviceSn", "deviceId"],
+        }
 
     @staticmethod
     def _clean_slots(slots: dict[str, Any]) -> dict[str, Any]:
@@ -1041,7 +1276,15 @@ class RightAgentGraphServiceV6:
             "deviceName": device.get("deviceName") or device.get("name"),
         }
 
-    def _select_candidate(self, *, kind: str, candidates: list[dict[str, Any]], choices: list[dict[str, Any]], empty_answer: str) -> dict[str, Any]:
+    def _select_candidate(
+        self,
+        *,
+        kind: str,
+        candidates: list[dict[str, Any]],
+        choices: list[dict[str, Any]],
+        empty_reason: str,
+        empty_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """选择候选对象
 
         根据候选数量处理选择逻辑：
@@ -1053,13 +1296,17 @@ class RightAgentGraphServiceV6:
             kind: 对象类型（person/device）
             candidates: 候选列表
             choices: 选择选项列表
-            empty_answer: 无候选时的提示信息
+            empty_reason: 无候选时的结构化原因
+            empty_data: 无候选时的结构化上下文
 
         Returns:
             包含选择结果的字典
         """
         if not candidates:
-            return {"status": "need_more_info", "answer": empty_answer, "data": {"result": []}}
+            return {
+                "status": "need_more_info",
+                "data": {"reason": empty_reason, "result": [], **(empty_data or {})},
+            }
         if len(candidates) == 1:
             return {"data": candidates[0]}
 
@@ -1137,8 +1384,17 @@ class RightAgentGraphServiceV6:
             choices=[AgentChoiceV6.model_validate(item) for item in state.get("choices") or []],
             confirm=AgentConfirmV6.model_validate(state["confirm"]) if state.get("confirm") else None,
             needs_input=state.get("needs_input") or [],
-            data=state.get("data") or {},
+            data=self._response_data(state),
         )
+
+    @staticmethod
+    def _response_data(state: dict[str, Any]) -> dict[str, Any]:
+        data = dict(state.get("data") or {})
+        if state.get("pending_task"):
+            data["pending_task"] = state["pending_task"]
+        if state.get("focus_context"):
+            data["focus_context"] = state["focus_context"]
+        return data
 
     @staticmethod
     def _interrupt_payload(state: dict[str, Any]) -> dict[str, Any] | None:

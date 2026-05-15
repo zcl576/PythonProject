@@ -176,25 +176,42 @@ class LlmClient:
         question: str,
         target_tools: tuple[str, ...],
         slot_names: tuple[str, ...],
+        pending_task: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if not self._enabled or not question.strip():
             return None
+        payload: str | dict[str, Any]
+        if pending_task:
+            context = self._without_internal_fields(pending_task)
+            if isinstance(context, dict) and ("pending_task" in context or "focus_context" in context):
+                payload = {"current_question": question, **context}
+            else:
+                payload = {"current_question": question, "pending_task": context}
+        else:
+            payload = question
         messages = [
             {
                 "role": "system",
-                "content": self._right_agent_v6_planner_prompt(target_tools, slot_names),
+                "content": self._right_agent_v6_planner_prompt((*target_tools, "direct_answer"), slot_names),
             },
-            {"role": "user", "content": question},
+            {
+                "role": "user",
+                "content": json.dumps(payload, ensure_ascii=False) if isinstance(payload, dict) else payload,
+            },
         ]
         content = await self._json_chat(messages, temperature=0)
-        return self._parse_right_agent_v5_plan(content, target_tools, slot_names)
+        return self._parse_right_agent_v5_plan(content, (*target_tools, "direct_answer"), slot_names)
 
     async def answer_right_agent_v6(
         self,
         *,
         question: str | None,
+        status: str | None = None,
         slots: dict[str, Any],
         tool_history: list[dict[str, Any]],
+        needs_input: list[str] | None = None,
+        follow_up_question: str | None = None,
+        data: dict[str, Any] | None = None,
         permission_status: str | None = None,
         permission_result: dict[str, Any] | None = None,
         write_result: dict[str, Any] | None = None,
@@ -204,7 +221,11 @@ class LlmClient:
             return None
         payload = {
             "question": question,
+            "status": status,
             "slots": self._without_internal_fields(slots),
+            "needs_input": needs_input or [],
+            "follow_up_question": follow_up_question,
+            "data": self._without_internal_fields(data or {}),
             "permission_status": permission_status,
             "permission_result": self._without_internal_fields(permission_result or {}),
             "write_result": self._without_internal_fields(write_result or {}),
@@ -219,6 +240,15 @@ class LlmClient:
                     "只能使用输入中提供的信息，不要编造权限状态或操作结果。"
                     "不要暴露 project_id、session_id、trace_id、原始 JSON 或内部编排字段。"
                     "只有 write_result 明确表示成功时，才能说已经完成写操作。"
+                    "如果 status 是 need_more_info，请自然地说明当前缺少什么信息，并引导用户补充，"
+                    "不要提 slots、needs_input、tool、JSON 等内部字段名。"
+                    "如果 data.reason 是 empty_question，请提示用户描述要查询或处理的门禁问题。"
+                    "如果 data.reason 是 missing_any_required 或 missing_required_slot，"
+                    "请根据 needs_input 和 data.current_tool 提示用户补充人员、设备或权限判断所需信息。"
+                    "如果 data.reason 是 missing_resolver_input，说明当前缺少用于查询人员或设备的线索，"
+                    "请根据 data.resolver_tool 和 needs_input 引导用户补充姓名/手机号/人员ID或设备名称/设备SN/设备ID。"
+                    "如果 data.reason 是 person_not_found，必须明确说明没有查到该人员，并建议核对姓名或改用手机号/人员ID。"
+                    "如果 data.reason 是 device_not_found，必须明确说明没有查到该设备，并建议核对设备名称或改用设备SN/设备ID。"
                 ),
             },
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -486,6 +516,8 @@ class LlmClient:
             "intent": parsed.get("intent"),
             "target_tool": target_tool,
             "slots": slots,
+            "answer": parsed.get("answer") if isinstance(parsed.get("answer"), str) else "",
+            "continue_previous": parsed.get("continue_previous") is True,
         }
 
     @staticmethod
@@ -532,6 +564,13 @@ class LlmClient:
             f"target_tool 只能从以下值中选择：{', '.join(target_tools)}。"
             f"slots 只能包含以下字段：{', '.join(slot_names)}。"
             "请选择用户最终想完成的业务目标，不要输出补槽工具链。"
+            "如果用户输入中包含 pending_task，请判断 current_question 是否是在补充 pending_task 缺失的信息。"
+            "只有 current_question 明确补充 pending_task.missing_slots 中的一项时，continue_previous 才能为 true；"
+            "如果用户提出了新的人员、设备、权限问题或新的业务目标，continue_previous 必须为 false。"
+            "如果用户输入中包含 focus_context，且 current_question 使用“它、这个设备、在线吗、状态怎么样”等表达追问上一轮对象，"
+            "可以使用 focus_context 中的设备或人员槽位，并将 continue_previous 设为 true。"
+            "如果用户只是问你能做什么、能力范围、打招呼、闲聊，或问题无法匹配任何业务工具，"
+            "target_tool 选择 direct_answer，并在 answer 中直接给出面向用户的中文回答，不要硬选业务工具。"
             "查询用户信息选择 search_person；查询设备信息选择 search_device；"
             "查询权限、门打不开、刷不开、为什么不能进门选择 query_permission；"
             "权限过期需要延期选择 extend_permission；权限被禁用需要开启选择 enable_permission；"
@@ -540,7 +579,12 @@ class LlmClient:
             "只抽取用户明确提供或上下文可以确定的信息，不要猜测 personId、deviceSn、deviceId、cardNo。"
             "编号、SN、卡号、ID 必须保留原始大小写。"
             '输出格式示例：{"intent":"extend_permission","target_tool":"extend_permission",'
-            '"slots":{"personName":"张三","deviceName":"三号门","durationDays":30}}。'
+            '"slots":{"personName":"张三","deviceName":"三号门","durationDays":30},"continue_previous":false}。'
+            '补充上一轮缺失信息时输出格式示例：{"intent":"query_permission","target_tool":"query_permission",'
+            '"slots":{"deviceName":"东门"},"continue_previous":true}。'
+            '不需要工具时输出格式示例：{"intent":"chat","target_tool":"direct_answer",'
+            '"slots":{},"answer":"我可以帮你查询人员、设备和门禁权限，也可以在确认后处理权限变更。",'
+            '"continue_previous":false}。'
         )
 
     def _get_prompt(self) -> str:
